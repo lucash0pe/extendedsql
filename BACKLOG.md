@@ -62,6 +62,12 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 - [x] **Curated demo examples.** `examples/generate_examples.py` defines the ESQL↔SQL example
   set (6 examples, simple → advanced), validates each ESQL query against its SQL equivalent via
   sqlite, and writes `public/examples/examples.json` for the website demo. `make examples`.
+- [x] **Pyodide path verified.** The built wheel installs via `micropip` in a real Pyodide 0.27.2
+  runtime (pandas 2.2.3 + numpy 2.0.2 shipped by Pyodide satisfy our deps; beartype pulled from
+  PyPI) and `df.esql.query(...)` returns results identical to the native engine. No engine changes
+  needed for the browser. **Recommendation:** self-host the Pyodide runtime + wheels (esql,
+  beartype) in the website's `public/` on Cloudflare so the ESQL demo depends only on the site
+  loading (no third-party CDN, no mini).
 - [x] **BUG-8 (found via example generation) — aggregate reused in SELECT + HAVING.** An aggregate
   named in both clauses (e.g. `quant.sum`) was appended twice, so it was accumulated twice per row
   (silently **doubling** sum/count) and, for avg, converted twice (`'float' object is not
