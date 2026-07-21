@@ -1,4 +1,4 @@
-.PHONY: install test test-fast lint typecheck build check
+.PHONY: install test test-fast lint format typecheck build check examples
 
 install:
 	uv sync --extra dev
@@ -10,10 +10,13 @@ test-fast:
 	uv run python -m pytest -q
 
 lint:
-	uv run ruff check src tests
+	uv run ruff check src tests examples
 
 format:
-	uv run ruff format src tests
+	uv run ruff format src tests examples
+
+examples:
+	uv run python examples/generate_examples.py
 
 # Advisory: mypy is configured for parity but not yet clean over the dynamic
 # query evaluator (union comparisons, TypedDict key-narrowing). See BACKLOG.md.

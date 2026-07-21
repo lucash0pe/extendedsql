@@ -310,5 +310,33 @@ def test_mf_query_with_having(sales_test_data: pd.DataFrame):
     _test_query(sql, esql, data=sales_test_data)
 
 
+@pytest.mark.timeout(5)
+def test_sum_reused_in_select_and_having(sales_test_data: pd.DataFrame):
+    # An aggregate named in both SELECT and HAVING must be computed once. A duplicate was
+    # accumulated twice per row, silently doubling sum/count.
+    sql = """
+        SELECT cust, SUM(quant) FROM sales
+        GROUP BY cust HAVING SUM(quant) > 500000
+    """
+    esql = """
+        SELECT cust, quant.sum HAVING quant.sum > 500000
+    """
+    _test_query(sql, esql, data=sales_test_data)
+
+
+@pytest.mark.timeout(5)
+def test_avg_reused_in_select_and_having(sales_test_data: pd.DataFrame):
+    # Same aggregate reuse for avg: the duplicate was converted from {sum,count} to a float
+    # twice, raising "'float' object is not subscriptable".
+    sql = """
+        SELECT cust, ROUND(AVG(quant), 2) FROM sales
+        GROUP BY cust HAVING AVG(quant) > 500
+    """
+    esql = """
+        SELECT cust, quant.avg HAVING quant.avg > 500
+    """
+    _test_query(sql, esql, data=sales_test_data)
+
+
 if __name__ == "__main__":
     pytest.main()

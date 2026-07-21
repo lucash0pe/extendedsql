@@ -63,8 +63,13 @@ def _build_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:
         having_clause=keyword_clauses["HAVING"], groups=parsed_over_clause, column_dtypes=column_dtypes
     )
 
-    aggregates["global_scope"].extend(parsed_select_clause["aggregates"]["global_scope"])
-    aggregates["group_specific"].extend(parsed_select_clause["aggregates"]["group_specific"])
+    # Merge the SELECT aggregates into those collected from HAVING, skipping any already
+    # present. An aggregate named in both SELECT and HAVING (e.g. `quant.avg`) must appear
+    # once: a duplicate is accumulated twice per row (doubling sum/count) and converted twice.
+    for scope in ("global_scope", "group_specific"):
+        for aggregate in parsed_select_clause["aggregates"][scope]:
+            if aggregate not in aggregates[scope]:
+                aggregates[scope].append(aggregate)
 
     order_by_clause = parse_order_by_clause(
         order_by_clause=keyword_clauses["ORDER BY"],
