@@ -57,7 +57,16 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   3.12, added a Development section.
 - [x] **Version** — bumped `0.1.0 → 1.0.0`; wheel + sdist build clean. Local tag only (not pushed).
 
-## v1.1 — Next
+## v1.1 — In progress
+
+- [x] **Curated demo examples.** `examples/generate_examples.py` defines the ESQL↔SQL example
+  set (6 examples, simple → advanced), validates each ESQL query against its SQL equivalent via
+  sqlite, and writes `public/examples/examples.json` for the website demo. `make examples`.
+- [x] **BUG-8 (found via example generation) — aggregate reused in SELECT + HAVING.** An aggregate
+  named in both clauses (e.g. `quant.sum`) was appended twice, so it was accumulated twice per row
+  (silently **doubling** sum/count) and, for avg, converted twice (`'float' object is not
+  subscriptable`). `parse.py` now dedups the merge. Regression tests cover both. *(This bug shipped
+  in v1.0.0 and is fixed on `main` for v1.1.)*
 
 - [ ] **EMF support (headline feature).** Entry-value conditions like `col = col + 1`.
   `_parse_emf_condition_value` is a TODO stub; the `is_emf` flag is parsed but not executed. Not
