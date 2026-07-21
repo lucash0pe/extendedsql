@@ -1,11 +1,27 @@
-.PHONY: install install-dev build test
+.PHONY: install test test-fast lint typecheck build check
 
-# The 'run' target executes your Python script with poetry.
+install:
+	uv sync --extra dev
 
-install :; poetry install --no-dev
+test:
+	uv run python -m pytest -vv
 
-install-dev :; poetry install
+test-fast:
+	uv run python -m pytest -q
 
-build :; poetry build
+lint:
+	uv run ruff check src tests
 
-test :; poetry run pytest -vv
+format:
+	uv run ruff format src tests
+
+# Advisory: mypy is configured for parity but not yet clean over the dynamic
+# query evaluator (union comparisons, TypedDict key-narrowing). See BACKLOG.md.
+typecheck:
+	uv run mypy
+
+build:
+	uv build
+
+# The enforced gate: lint -> test.
+check: lint test

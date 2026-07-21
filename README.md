@@ -63,11 +63,11 @@ ORDER BY 3
 
 ### Prerequisites
 
-You must have [Python 3.13 or higher](https://www.python.org/downloads/) installed on your local machine. 
+You must have [Python 3.12 or higher](https://www.python.org/downloads/) installed on your local machine. 
 
 ### Install the package
 ```sh
-pip3 install https://github.com/lucasfhope/esql.git
+pip3 install git+https://github.com/lucash0pe/extendedsql.git
 ```
 
 ### Use with a pandas DataFrame
@@ -114,4 +114,22 @@ Refer to the [documentation](public/docs/syntax.md) on the ESQL query syntax loc
 When writing conditions that include dates, write them in the in `yyyy-mm-dd` format within single or double quotes. 
 
 Strings should also be inside single or double quotes. Keep in mind that escaping characters in python strings may cause problems. It is best to not include data in the datatable that require escape characters to match. If your data contains quotes, it is suggested that you use the opposite quotes to write them (e.g. " ' ' " or ' " " ').
+
+
+## Development
+
+ESQL uses [uv](https://docs.astral.sh/uv/) for dependency management and packaging.
+
+```sh
+uv sync --extra dev   # install runtime + dev dependencies
+make check            # the gate: ruff lint + pytest
+make test             # tests only
+make lint             # ruff
+make typecheck        # mypy (advisory; see BACKLOG.md)
+make build            # build the wheel + sdist into dist/
+```
+
+The engine lives in `src/esql/` (`parser/` turns a query into a typed clause structure,
+`execution/` computes the grouped result via the Φ-operator algorithm). See `BACKLOG.md` for
+tracked work.
 

@@ -1,14 +1,23 @@
-import math
-import numpy as np
 from datetime import date
-from src.esql.parser.types import AggregatesDict, GlobalAggregate, GroupAggregate
+
+import pandas as pd
+
+from esql.parser.types import AggregatesDict, GlobalAggregate, GroupAggregate
+
 
 class GroupedRow:
-    '''
+    """
     Each GroupedRow represents one unique combination of grouping attribute values
     and stores the computed aggregate values in a data map.
-    '''
-    def __init__(self, grouping_attributes: list[str], aggregates: AggregatesDict , initial_row: list[str | int | bool| date], column_indices: dict[str, int]):
+    """
+
+    def __init__(
+        self,
+        grouping_attributes: list[str],
+        aggregates: AggregatesDict,
+        initial_row: list[str | int | bool | date],
+        column_indices: dict[str, int],
+    ):
         self.grouping_attributes = grouping_attributes
         self.aggregates = aggregates
         self._initial_row = initial_row
@@ -20,66 +29,66 @@ class GroupedRow:
         for attribute in self.grouping_attributes:
             index = self._column_indices[attribute]
             data_map[attribute] = self._initial_row[index]
-        for aggregate in self.aggregates['global_scope']:
-            column = aggregate['column']
-            function = aggregate['function']
+        for aggregate in self.aggregates["global_scope"]:
+            column = aggregate["column"]
+            function = aggregate["function"]
             index = self._column_indices[column]
-            value = self._initial_row[index] or np.nan
-            if math.isnan(value):
+            value = self._initial_row[index]
+            if pd.isna(value):
                 continue
             aggregate_key = self._aggregate_key(aggregate)
-            if function in ['sum', 'min', 'max']:
+            if function in ["sum", "min", "max"]:
                 data_map[aggregate_key] = value
-            elif function == 'count':
+            elif function == "count":
                 data_map[aggregate_key] = 1
-            elif funtion == 'avg':
-                data_map[aggregate_key] = {'sum': value, 'count': 1}
+            elif function == "avg":
+                data_map[aggregate_key] = {"sum": value, "count": 1}
         return data_map
 
-    def update_data_map(self, aggregate: GlobalAggregate | GroupAggregate, row: list[str | int | bool| date]) -> None:
-        column = aggregate['column']
-        function = aggregate['function']
+    def update_data_map(self, aggregate: GlobalAggregate | GroupAggregate, row: list[str | int | bool | date]) -> None:
+        column = aggregate["column"]
+        function = aggregate["function"]
         index = self._column_indices[column]
-        value = row[index] or np.nan
-        if math.isnan(value):
+        value = row[index]
+        if pd.isna(value):
             return
         aggregate_key = self._aggregate_key(aggregate)
         if aggregate_key not in self._data_map:
-            if function in ['sum', 'min', 'max']:
+            if function in ["sum", "min", "max"]:
                 self._data_map[aggregate_key] = value
-            elif function == 'count':
+            elif function == "count":
                 self._data_map[aggregate_key] = 1
-            elif function == 'avg':
-                self._data_map[aggregate_key] = {'sum': value, 'count': 1}
+            elif function == "avg":
+                self._data_map[aggregate_key] = {"sum": value, "count": 1}
         else:
-            if function == 'sum':
+            if function == "sum":
                 self._data_map[aggregate_key] += value
-            elif function == 'min':
+            elif function == "min":
                 if value < self._data_map[aggregate_key]:
                     self._data_map[aggregate_key] = value
-            elif function == 'max':
+            elif function == "max":
                 if value > self._data_map[aggregate_key]:
                     self._data_map[aggregate_key] = value
-            elif function == 'count':
+            elif function == "count":
                 self._data_map[aggregate_key] += 1
-            elif function == 'avg':
+            elif function == "avg":
                 values = self._data_map[aggregate_key]
-                new_sum = values['sum'] + value
-                new_count = values['count'] + 1
-                self._data_map[aggregate_key] = {'sum': new_sum, 'count': new_count}
+                new_sum = values["sum"] + value
+                new_count = values["count"] + 1
+                self._data_map[aggregate_key] = {"sum": new_sum, "count": new_count}
 
     # This must be called on all GroupedRows after they have been filtered by the WHERE and SUCH THAT clauses
     def convert_avg_in_data_map(self) -> None:
-        for aggregate in self.aggregates['global_scope'] + self.aggregates['group_specific']:
-            if aggregate['function'] == 'avg':
+        for aggregate in self.aggregates["global_scope"] + self.aggregates["group_specific"]:
+            if aggregate["function"] == "avg":
                 aggregate_key = self._aggregate_key(aggregate)
                 if self._data_map.get(aggregate_key):
-                    _sum, _count = self._data_map[aggregate_key]['sum'], self._data_map[aggregate_key]['count']
-                    _avg = _sum/_count
+                    _sum, _count = self._data_map[aggregate_key]["sum"], self._data_map[aggregate_key]["count"]
+                    _avg = _sum / _count
                     self._data_map[aggregate_key] = _avg
 
     def _aggregate_key(self, aggregate: GlobalAggregate | GroupAggregate) -> str:
-        if 'group' in aggregate:
+        if "group" in aggregate:
             return f"{aggregate['group']}.{aggregate['column']}.{aggregate['function']}"
         else:
             return f"{aggregate['column']}.{aggregate['function']}"
@@ -89,8 +98,7 @@ class GroupedRow:
         return self._data_map
 
     def __str__(self):
-        return ', '.join(f"{k}: {v}" for k, v in self._data_map.items())
+        return ", ".join(f"{k}: {v}" for k, v in self._data_map.items())
 
     def __repr__(self):
         return self.__str__()
-

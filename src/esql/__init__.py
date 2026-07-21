@@ -1,1 +1,3 @@
-from src.esql.accessor import ESQLAccessor
+from esql.accessor import ESQLAccessor
+
+__all__ = ["ESQLAccessor"]
