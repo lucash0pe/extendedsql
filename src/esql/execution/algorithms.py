@@ -159,8 +159,17 @@ def _evaluate_having_clause(condition: ParsedHavingClause, data_map: dict[str, s
 
 
 def _evaluate_actual_vs_expected_value(
-    actual_value: str | int | bool | date, operator: str, condition_value: str | int | bool | date
+    actual_value: str | int | bool | date | None, operator: str, condition_value: str | int | bool | date
 ) -> bool:
+    # SQL NULL semantics: a comparison with a missing operand is not true, so the row drops from
+    # the result instead of raising. A group-specific aggregate is absent (None) when its SUCH
+    # THAT group matched no rows for this grouping combination; comparing that None with an
+    # ordering operator (>, <, >=, <=) would otherwise raise a raw TypeError that leaks straight
+    # to the caller (and, in the browser demo, to the visitor). Collapsing to False here means a
+    # NOT wrapped directly around such a condition reads as True rather than staying NULL, which
+    # is a small divergence from strict three-valued logic and acceptable for this engine.
+    if actual_value is None or condition_value is None:
+        return False
     if operator in ["=", "=="]:
         return actual_value == condition_value
     elif operator == ">":

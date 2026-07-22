@@ -82,7 +82,7 @@ def parse_over_clause(over_clause: str | None) -> list[str]:
     for group in (group.strip() for group in over_clause.split(",")):
         match = re.match(pattern, group)
         if not match:
-            raise ParsingError(ParsingErrorType.OVER_CLAUSE, f"Invalid group name: '{group}")
+            raise ParsingError(ParsingErrorType.OVER_CLAUSE, f"Invalid group name: '{group}'")
         groups.append(group)
     return groups
 
@@ -262,7 +262,7 @@ def _parse_such_that_section(
     if any(other_group + "." in section for other_group in groups if other_group != group_found):
         raise ParsingError(
             ParsingErrorType.SUCH_THAT_CLAUSE,
-            f"Multiple groups found in a clause: '{section}'\nEach comma seperated clause must contain only one group.",
+            f"Multiple groups found in a clause: '{section}'\nEach comma separated clause must contain only one group.",
         )
 
     return _parse_simple_group_condition(section, group_found, column_dtypes)
