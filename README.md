@@ -1,17 +1,17 @@
 
 # ExtendedSQL
 
-ESQL is a query language based off of SQL. However, it solves the biggest problem with SQL -- the inibility to compute aggregates outside of the grouping attributes. 
+ESQL is a query language based off of SQL. It solves the biggest problem with SQL: the inability to compute aggregates outside of the grouping attributes.
 
-ESQL is based off of the SQL extention proposed in the two papers  in `/public/ref/`, [MFQueries](/public/ref/MFQueries.pdf) and [Ad-Hoc OLAP Query Processing](/public/ref/Ad-Hoc_OLAP_Query_Processing.pdf). The papers propose a concept of the Phi Operator in relational agebra and the basic syntax of the language, as well as the algorithm used to compute the resulting relation. Read the articles to learn more about the theory behind the query language.
+ESQL is based off of the SQL extension proposed in the two papers in `public/ref/`, [MFQueries](public/ref/MFQueries.pdf) and [Ad-Hoc OLAP Query Processing](public/ref/Ad-Hoc_OLAP_Query_Processing.pdf). The papers propose a concept of the Phi Operator in relational algebra and the basic syntax of the language, as well as the algorithm used to compute the resulting relation. Read the articles to learn more about the theory behind the query language.
 
 ## Why use ESQL
 
-Since ESQL automatically groups by groupring attriubutes in the query, it is best used for data analysis (OLAP) rather than for transactional processes.
+Since ESQL automatically groups by grouping attributes in the query, it is best used for data analysis (OLAP) rather than for transactional processes.
 
-ESQL is designed to be able to include mutiple aggregate queries for the five main aggregate functions (`sum`, `avg`, `min`, `max`, `count`), without the need of nested subqueries and repetitive selection, grouping, and aggregation. Therefore you can write queries that are much shorter than if you had to write an ESQL query.
+ESQL is designed to be able to include multiple aggregate queries for the five main aggregate functions (`sum`, `avg`, `min`, `max`, `count`), without the need of nested subqueries and repetitive selection, grouping, and aggregation. Therefore you can write queries that are much shorter than if you had to write a SQL query.
 
-For example, using the `sales` table located in `/public/data/`, you could write an SQL query that computes that average and maximum sales quantity for each customer, product, and year.
+For example, using the `sales` table located in `public/data/`, you could write a SQL query that computes the average and maximum sales quantity for each customer, product, and year.
 
 ```sql
 WITH groups AS (
@@ -78,18 +78,18 @@ Make sure that you have pandas installed on your local machine or in a virtual e
 pip3 install pandas
 ```
 
-Load your data into pandas DataFrame. If you wanted to do this with `sales.csv` in `/public/data/`, you would use the pandas `read_csv()` function.
+Load your data into a pandas DataFrame. If you wanted to do this with `sales.csv` in `public/data/`, you would use the pandas `read_csv()` function.
 
 ```python
 import pandas as pd
 
-df = pd.read_csv('/public/data/sales.csv')
+df = pd.read_csv('public/data/sales.csv')
 ```
 
 Then import and use the ESQL Dataframe Accessor, which will return the query result set as a pandas DataFrame.
 
 ```python
-from esql.accessor import ESQLAccessor
+from esql import ESQLAccessor
 
 new_df = df.esql.query("SELECT cust, prod, quant.avg")
 ```
@@ -97,7 +97,7 @@ new_df = df.esql.query("SELECT cust, prod, quant.avg")
 Aggregates are rounded to 2 decimal places by default. You can change this by passing a different value to the query as `decimal_places`.
 
 ```python
-from esql.accessor import ESQLAccessor
+from esql import ESQLAccessor
 
 query_output = df.esql.query(
     query="SELECT cust, prod, quant.avg",
@@ -109,7 +109,7 @@ query_output = df.esql.query(
 
 ESQL can only handle datatables with strings, numbers, booleans, and dates. When the esql.query is called on a DataFrame, these types will be enforced on values in the Dataframe. Dates should be in `yyyy-mm-dd` format to ensure that they are handled correctly. Columns with other datatypes will be casted and handled as strings.
 
-Refer to the [documentation](public/docs/syntax.md) on the ESQL query syntax located in `/public/docs/` for information on writing a ESQL query. 
+Refer to the [documentation](public/docs/syntax.md) on the ESQL query syntax located in `public/docs/` for information on writing an ESQL query.
 
 When writing conditions that include dates, write them in the in `yyyy-mm-dd` format within single or double quotes. 
 
