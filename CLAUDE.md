@@ -35,7 +35,7 @@ make build            # wheel + sdist into dist/ (the in-browser demo installs t
 ## Security
 
 This engine inherits the umbrella standard in [`../security-standards.md`](../security-standards.md);
-its `data-agent-framework/infrastructure/CLAUDE.md` threat model is the worked reference.
+its `data-agent-framework/api/CLAUDE.md` threat model is the worked reference.
 
 **Inherited slice: §1, secure by construction.** The `query` accessor accepts an
 **untrusted user query string** (`ESQLAccessor.query`), so the parser and execution path
