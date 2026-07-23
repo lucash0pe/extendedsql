@@ -77,6 +77,29 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 - [ ] **EMF support (headline feature).** Entry-value conditions like `col = col + 1`.
   `_parse_emf_condition_value` is a TODO stub; the `is_emf` flag is parsed but not executed. Not
   advertised in the docs today, so it is net-new capability, not a fix.
+- [ ] **CONTAINS / semi-join predicate (headline feature, requested for the GD demo).** A WHERE
+  predicate that keeps rows whose *group* contains a row matching a condition — e.g.
+  `WHERE date CONTAINS song = 'Dark Star'` → all songs from every show that also played Dark Star.
+  Semantics: `WHERE <key> CONTAINS <inner condition>` = keep rows whose `<key>` value appears in
+  the subset satisfying `<inner condition>` (a self semi-join on `<key>`). Bridges the two demo
+  grains (songs ↔ shows) without joins, which ESQL doesn't have. Work: parser grammar + a new
+  execution filter pass + tests + a `public/docs/syntax.md` section, then an example wired into the
+  `website` demo. This is the "build engine + demo side by side" case — coordinate with `website`.
+- [ ] **Nested / multi-grain aggregation (headline feature — the grain-bridging companion to
+  CONTAINS).** Aggregate at a declared finer grain, then roll *that* up — an aggregate of an
+  aggregate, in one pass, no subqueries (the MFQueries thesis taken a step further). Motivating
+  case: the GD archive is one song-grain table, but a "show" is the derived grain `(venue, date)`.
+  Today you can group *to* the show grain, but you cannot put a song-level measure beside a
+  show-level roll-up, nor take "avg songs-per-show by venue" (an avg of a per-show count). This
+  makes a separate `shows` table unnecessary — shows become "aggregate at the `(venue, date)`
+  grain." The dataset already *declares* the grain (in the shared `datasets/<src>/*.structure.json`:
+  "a show is (venue, date)"), so the language can read it. Sketch (uncommitted): a `PER <grain>`
+  sub-aggregate, e.g. `SELECT venue, songs_per_show.avg PER show (venue, date) WITH songs_per_show
+  = count PER show`. Work: parser grammar for the sub-grain + a two-level execution pass (compute
+  the fine-grain aggregate, then the output-grain aggregate over it) + tests + a
+  `public/docs/syntax.md` section + a `website` demo example. Pairs with CONTAINS: CONTAINS
+  *filters* one grain by another; this *measures* across grains. Design captured now; build parked
+  until the datasets/rename plumbing lands.
 - [ ] **mypy clean pass.** 143 errors, all from the dynamic evaluator: union comparisons
   (`[operator]`) and TypedDict key-narrowing (`[typeddict-item]`/`[index]`) mypy can't follow
   through runtime `'group' in aggregate` checks. Options: type the cell/accumulator boundaries as
@@ -86,10 +109,12 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 
 ## 3. Engine-side prep for the website demo
 
-The demo frontend lives in `website/` (or a new `frontend/` folder) — see that repo's backlog.
+The demo frontend AND its data now live entirely in `website/` (`src/demos/esql/` +
+`scripts/esql-data/`); this repo is engine-only, with `sales.csv` as its sole fixture. See the
+website repo for demo work.
 
-- [ ] Curated ESQL↔SQL example set + expected result tables (can be generated from the engine now
-  that it's correct) for the demo's "given examples" panel.
-- [ ] Decide the demo execution model: in-browser (Pyodide running the `esql` wheel over
-  `public/data/sales.csv`, works with the mini backend down) vs. server-side on the mini.
-- [ ] `from esql import ESQLAccessor` is now a stable entry point for whichever backend runs it.
+- [x] Curated ESQL↔SQL example set + expected result tables — done, generated + SQL-validated in
+  `website/scripts/esql-data/` (moved out of this repo along with the demo datasets).
+- [x] Demo execution model decided: **in-browser via Pyodide** (the `esql` wheel), no backend.
+- [x] `from esql import ESQLAccessor` / the `.esql` accessor is the stable entry point the wheel exposes.
+- Next engine ask from the demo: the **CONTAINS predicate** above (§ headline features).
