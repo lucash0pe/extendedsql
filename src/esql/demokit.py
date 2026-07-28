@@ -94,7 +94,8 @@ def _load_structure(path: Path, columns: set[str], dataset_id: str) -> dict:
 
 def build_demo(dataset: dict, *, csv: Path, structure: Path, out_dir: Path) -> None:
     """Validate a dataset's ESQL examples and write its `<id>.json` (+ a copy of the CSV) into
-    out_dir. `dataset` is the spec: id, label, category, description, examples[], walkthrough[]."""
+    out_dir. `dataset` is the spec: id, label, description, examples[], walkthrough[], and an
+    optional `category` (only used to group datasets in a multi-dataset picker)."""
     ds = dataset
     raw = pd.read_csv(csv)
     enforced = _enforce_allowed_dtypes(raw)
@@ -135,7 +136,9 @@ def build_demo(dataset: dict, *, csv: Path, structure: Path, out_dir: Path) -> N
     out = {
         "id": ds["id"],
         "label": ds["label"],
-        "category": ds["category"],
+        # category is optional presentation metadata — only used to group datasets in a
+        # multi-dataset picker. Included in the asset only when the spec declares it.
+        **({"category": ds["category"]} if ds.get("category") else {}),
         "description": ds["description"],
         "csv": f"{ds['id']}.csv",
         "schema": schema,
