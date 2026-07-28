@@ -22,6 +22,21 @@ class ESQLAccessor:
         result_dataframe = execute(parsed_query, decimal_places)
         return result_dataframe
 
+    @beartype
+    def validate(self, query: str) -> None:
+        """Parse `query` against this frame's columns without executing it.
+
+        Returns None when the query parses and raises the same ParsingError `query` would
+        otherwise raise, so both paths share one error contract. Parsing is the cheap half of a
+        query — microseconds against tens of milliseconds — which is what makes this usable for
+        live feedback while someone is still typing.
+
+        It checks what the parser checks: clause order, syntax, that referenced columns exist,
+        and that each aggregate function suits its column's dtype. A query that validates can
+        still return zero rows.
+        """
+        get_parsed_query(self.data, query)
+
 
 def _enforce_allowed_dtypes(data: pd.DataFrame) -> pd.DataFrame:
     """

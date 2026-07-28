@@ -105,6 +105,32 @@ query_output = df.esql.query(
 )
 ```
 
+### Checking a query without running it
+
+`validate` parses a query against the frame's columns and stops there. It returns `None` when the
+query parses and raises the same `ParsingError` `query` would, so both share one error contract.
+
+```python
+from esql.parser.error import ParsingError
+
+try:
+    df.esql.validate("SELECT cust, quantt.avg")
+except ParsingError as e:
+    e.error_type  # ParsingErrorType.SELECT_CLAUSE — which clause it fell in
+    e.token       # 'quantt.avg' — the fragment it rejected
+    e.message     # "Invalid aggregate column: 'quantt.avg'"
+```
+
+Parsing is the cheap half of a query — microseconds against tens of milliseconds — so this is
+usable for live feedback while someone is still typing. `token` is what lets an editor point at the
+mistake rather than only name the clause. It is a fragment and not a character offset because the
+parser runs on a lowercased, whitespace-collapsed copy of the query, so offsets into it do not map
+back onto what was typed; match it case-insensitively.
+
+The token sets the parser accepts are exported for the same reason: `esql.KEYWORDS`,
+`esql.AGGREGATE_FUNCTIONS` and `esql.CONDITIONAL_OPERATORS`. Anything that documents or completes
+ESQL should read those rather than keep its own copy.
+
 ## ESQL Input Data and Query Syntax
 
 ESQL can only handle datatables with strings, numbers, booleans, and dates. When the esql.query is called on a DataFrame, these types will be enforced on values in the Dataframe. Dates should be in `yyyy-mm-dd` format to ensure that they are handled correctly. Columns with other datatypes will be casted and handled as strings.
