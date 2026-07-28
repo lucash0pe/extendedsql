@@ -27,12 +27,29 @@ from esql.parser.types import (
     SimpleGroupCondition,
 )
 
+###########################################################################
+# Grammar
+###########################################################################
+# The token sets the parser accepts. They are the grammar's only definition: the parser reads
+# them here, `public/docs/syntax.md` describes them in prose, and downstream docs (the portfolio
+# ESQL demo) generate against them rather than restating them.
+
+# The six clause keywords, in the order a query must write them.
+KEYWORDS = ("SELECT", "OVER", "WHERE", "SUCH THAT", "HAVING", "ORDER BY")
+
+# The aggregate functions valid in `column.function` / `group.column.function`. All require a
+# numeric column except `count`, which accepts any dtype.
+AGGREGATE_FUNCTIONS = ("sum", "avg", "min", "max", "count")
+
+# Comparison operators valid in WHERE, SUCH THAT and HAVING conditions. `==` is read as `=`.
+CONDITIONAL_OPERATORS = (">=", "<=", "!=", "==", ">", "<", "=")
+
 
 ###########################################################################
 # Keyword & Clause Extraction
 ###########################################################################
 def get_keyword_clauses(query: str) -> dict[str, str | None]:
-    keyword_clauses = {"SELECT": None, "OVER": None, "WHERE": None, "SUCH THAT": None, "HAVING": None, "ORDER BY": None}
+    keyword_clauses: dict[str, str | None] = dict.fromkeys(KEYWORDS)
 
     # Find the location of each keyword in the query.
     keyword_indices = []
@@ -400,7 +417,6 @@ def _parse_aggregate(
     column_dtypes: dict[str, np.dtype],
     error_type=ParsingErrorType.SELECT_CLAUSE or ParsingErrorType.HAVING_CLAUSE,
 ) -> GlobalAggregate | GroupAggregate:
-    AGGREGATE_FUNCTIONS = ["sum", "avg", "min", "max", "count"]
     parts = aggregate.split(".")
 
     # Format: column.aggregate_function
@@ -495,7 +511,6 @@ def _parse_emf_condition_value(value: str):
 # Clause Structure Helper Functions
 ###########################################################################
 def _split_condition(condition: str) -> tuple[str, str, str] | None:
-    CONDITIONAL_OPERATORS = [">=", "<=", "!=", "==", ">", "<", "="]
     in_single = False
     in_double = False
 

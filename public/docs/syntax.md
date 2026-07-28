@@ -2,6 +2,8 @@
 
 This document contains information about writing ESQL queries. I will be providing examples as if I was writing a queries for the 'sales' table. The sales table can be found [here](/public/data/sales.csv) or at `/public/data/sales.csv`.
 
+This document is prose. The token sets it describes — the six keywords, the five aggregate functions, and the comparison operators — are defined once in [`src/esql/parser/util.py`](../../src/esql/parser/util.py) as `KEYWORDS`, `AGGREGATE_FUNCTIONS` and `CONDITIONAL_OPERATORS`, re-exported from `esql`. Read those if you need the authoritative list.
+
 ## Table of Contents
 - [Structure](#structure)
 - [SELECT](#select)
