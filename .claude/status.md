@@ -191,7 +191,10 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   through runtime `'group' in aggregate` checks. Options: type the cell/accumulator boundaries as
   `Any` (honest — a `_data_map` slot holds int|float|date or an avg `{'sum','count'}` dict), or
   model parsed conditions as dataclasses. Until then `typecheck` stays advisory.
-- [ ] **Push the release** — `git push && git push --tags` when ready (remote: `lucash0pe/extendedsql`).
+- [x] **Push the release** — done 2026-07-28. PR #2 merged to `main`, and `v1.0.1`, `v1.1.0`,
+  `v1.2.0`, `v1.3.0`, `v1.4.0` are tagged and pushed (`lucash0pe/extendedsql`). `v1.1.2` is
+  deliberately untagged: it was never a release, only a version an auto-checkpoint commit wrote to
+  `pyproject.toml`, and `1.1.1` never existed at all.
 
 ## v1.3.0 — the CONTAINS operator (2026-07-28)
 
