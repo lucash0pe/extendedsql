@@ -76,12 +76,45 @@ is green at **207 tests** (was 162).
   It lives here rather than in portfolio's `backend/esql/` because `build_demo` composes the whole
   output dict — a dataset's `demo.py` only hands it a spec.
 
+- [ ] **J3. The cap is set almost exactly wrong, and is probably the wrong instrument.** Filed from
+  portfolio 2026-07-29 after wiring J2 into the editor. The Grateful Dead dataset has **520** distinct
+  venues against `DISTINCT_VALUE_CAP = 500`, so `venue` ships nothing and `WHERE venue = '` offers
+  nothing — the one column where a visitor most needs help spelling (`Magoo's Pizza Parlor`). Missing
+  by twenty is not a judgement being vindicated; it is a number that happened to land there.
+
+  Raising it to 1000 fixes this dataset for a few KB (436 songs cost ~35 KB of a 60 KB asset). The
+  sharper point is that **a count is a proxy for the question actually being asked**, which is "does
+  completing this column help?" The signal for that is the *ratio*: `venue` is 520 distinct over
+  39,774 rows — 1.3%, plainly a dimension. The case worth protecting against is a free-text column,
+  which sits near 100% and is useless to complete at any cardinality. So: a ratio test with a
+  generous absolute ceiling for asset-size safety, rather than one count doing both jobs badly.
+
+  Either fix unblocks portfolio. The ratio version is the one worth having.
+
+- [ ] **J4. A quote inside a same-quoted literal parses and then matches nothing.** Found in the
+  browser 2026-07-29. `SELECT song WHERE song = '(I'm A) Road Runner'` **does not raise**: it parses,
+  ends the literal at the apostrophe, and returns **0 rows**. The double-quoted form returns the row.
+  **62 of this dataset's 436 songs carry an apostrophe**, so this is 14% of the values J2 just
+  shipped, and the failure mode is the worst available — a confident empty result with no error to
+  read.
+
+  There is no escape syntax in the language today. Two candidate fixes, both this repo's call:
+  doubling (`''`, SQL's answer), or rejecting an unbalanced quote count so it is at least an error.
+  **Rejecting is the floor** — nothing is worse than silently wrong.
+
+  Portfolio has routed around it for the menu: a pick chooses its quote character by content
+  (`quoteFor`), so an apostrophe value comes out double-quoted. Verified by running all 436 songs
+  through the engine quoted that way — **436/436 return exactly one row**, where the always-single
+  form returned zero for 62. That covers picks; it does **not** cover a visitor typing the apostrophe
+  form by hand, which only this repo can fix.
+
 **Portfolio-side follow-up, one line, required.** `DATASET_SCHEMA` is a new name in `esql.__all__`,
 so `backend/esql/build.sh`'s export guard fires on the next wheel: it exits with "esql now exports
 ['DATASET_SCHEMA'], which grammar.json does not account for." That is the guard working as designed.
 The fix is adding `"DATASET_SCHEMA"` to its `NOT_GRAMMAR` set — it is not a token set. Checked
 against the assets portfolio ships today: both `songs.json` and `coffee.json` validate against the
-schema unchanged, so nothing else breaks.
+schema unchanged, so nothing else breaks. **Done in portfolio 2026-07-29**, along with the
+`entry_value` consumption Stream G notes below; the demo now runs 1.7.0 with the gate green.
 
 ---
 
@@ -94,6 +127,32 @@ per-clause suggestion logic branches on clause *names* rather than on `accepts`.
 `HAS` finding one level up. The fix is portfolio-side and queued there; nothing to do here. Worth
 recording because it sets the obligation going the other way: **new grammar surface has to be
 expressible in `slot_kinds`/`accepts`**, since that is the channel a host actually reads.
+
+**Done in portfolio 2026-07-29.** Its caret menu now derives from `accepts` rather than from clause
+names, and a `unhandledSlotKinds` check fails its suite when this repo declares a kind it has no case
+for — the reading-side twin of the export-diff guard. Entry values are offered.
+
+- [ ] **G3. `operators` is per clause but legality is also per *dtype*, and that half is unpublished.**
+  Filed from portfolio 2026-07-29, found by testing the engine rather than reading it. The parser
+  rejects an ordering comparison on a non-numeric column:
+
+  | | `=` `!=` | `>` `>=` `<` `<=` | `CONTAINS` |
+  |---|---|---|---|
+  | number | ✓ | ✓ | ✗ needs text |
+  | date | ✓ | ✓ | ✗ |
+  | string | ✓ | **rejected** | ✓ |
+  | boolean | ✓ | **rejected** | ✗ |
+
+  `GRAMMAR["clauses"][c]["operators"]` carries only the per-clause axis, so a host reading it offers
+  `>` on a text column and the engine refuses. Portfolio hits this today: its menu suggests `song >`.
+
+  This is the same shape as the aggregate dtype rule, which **is** published
+  (`aggregates.any_dtype`, so `count` is known to be the only one legal on a non-numeric column).
+  The operator axis needs its counterpart — a per-operator dtype list, or a dtype-keyed operator set
+  alongside the clause-keyed one. Without it the host has exactly two options, and both are bad:
+  offer illegal operators, or hand-mirror the table above, which is the restatement Stream G exists
+  to end. **Portfolio is deliberately not implementing this until it can be read** — the table is
+  recorded here as a finding, not as a spec for someone to copy downstream.
 
 The front-end currently hand-mirrors rules this engine owns: which slot kinds each clause accepts,
 that `count` is the only aggregate legal on a non-numeric column (mirroring `_parse_aggregate`), that
@@ -127,6 +186,21 @@ clause gaining a rule upstream simply goes unreflected downstream.
 ## Stream H — language features
 
 H1 shipped; see the settled record. What it leaves open:
+
+- [ ] **H3. `ORDER BY` cannot sort by an aggregate.** Filed from portfolio 2026-07-29.
+  `SELECT song, position.count ORDER BY position.count` raises `[ORDER_BY_CLAUSE] Invalid value`, and
+  `ORDER BY 2` raises "out of range of the 1 grouping attributes" — confirming the index counts only
+  SELECT's plain columns, so an aggregate is unreachable by either spelling.
+
+  This is the obvious next thing a visitor wants: having just computed a count, sort by it. "Which
+  songs did they play most" is the first question anyone asks of this dataset, and the language
+  cannot currently express its second half. It is also why portfolio still offers nothing in
+  `ORDER BY` — a 1-based index into grouping attributes is not something a caret menu completes
+  well, and the thing that *would* be worth offering is the aggregate list.
+
+  Whether it extends the index to cover SELECT's full term list or takes the aggregate by name is
+  this repo's call; the grammar's `grouping_attribute_index` slot kind would need to change either
+  way, which makes it a `slot_kinds`/`accepts` change and therefore visible downstream by design.
 
 - [x] **H2. Rename the unbuilt semi-join.** `CONTAINS` now names the substring operator H1 shipped,
   so the grain-bridging semi-join in the settled record below could not keep that name. Decided
