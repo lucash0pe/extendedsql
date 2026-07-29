@@ -1,0 +1,20 @@
+{
+  "grain": "one row per sale; a customer's history is (cust)",
+  "dimensions": [
+    { "column": "cust", "role": "entity", "why": "the customer who bought" },
+    { "column": "prod", "role": "entity", "why": "the product sold" },
+    { "column": "state", "role": "geo", "why": "the US state the sale was made in" },
+    {
+      "column": "date",
+      "role": "time",
+      "why": "the calendar date of the sale",
+      "branchesTo": [
+        { "column": "day", "why": "day of the month, 1-31" },
+        { "column": "month", "why": "month of the year, 1-12" },
+        { "column": "year", "why": "year of the sale" }
+      ]
+    }
+  ],
+  "flags": [{ "column": "credit", "why": "true when the sale was made on credit" }],
+  "measures": [{ "column": "quant", "unit": "units", "note": "how many were sold" }]
+}

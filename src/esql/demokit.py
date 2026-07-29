@@ -9,6 +9,11 @@ JSON. An example that does not validate fails the build here rather than shippin
 Each dataset owns only its `DATASET` spec (metadata + curated examples + the build-up
 walkthrough) and calls `build_demo` with it; this module is the shared harness. It is build-time
 tooling: the browser only ever calls `df.esql.query()`, never imports this module.
+
+The asset's shape is declared in `dataset_schema.py` and checked here before anything is written,
+and the schema itself is emitted alongside the assets as `dataset.schema.json`. That is the seam
+this module exists at: it *writes* the JSON a host front-end *reads*, so the shape is published
+from the writing side rather than mirrored by hand on the reading side.
 """
 
 from __future__ import annotations
@@ -23,6 +28,14 @@ from pandas.api import types as pdt
 
 import esql.accessor  # noqa: F401  (registers the .esql accessor)
 from esql.accessor import _enforce_allowed_dtypes
+from esql.dataset_schema import DATASET_SCHEMA, DatasetSchemaError, validate_dataset
+
+# How many distinct values a column may hold and still ship them all. A host offers these as value
+# completions ("WHERE song = '" should suggest real song names), so the cap is about what is useful
+# to scroll and what is reasonable to ship, not about correctness -- above it the column is a poor
+# completion source anyway. Generous on purpose: the Grateful Dead archive's song column is a few
+# hundred titles and is exactly the case this exists for.
+DISTINCT_VALUE_CAP = 500
 
 
 def _friendly_type(series: pd.Series) -> str:
@@ -37,8 +50,51 @@ def _friendly_type(series: pd.Series) -> str:
     return "string"
 
 
+def _value_text(value) -> str:
+    """One distinct value as the text a query would carry, unquoted.
+
+    The datum, not the literal syntax: a host knows the column's `type` and quotes accordingly. Bools
+    render lowercase and dates ISO, which is what the parser accepts for each.
+    """
+    if isinstance(value, bool) or pdt.is_bool(value):
+        return "true" if value else "false"
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if hasattr(value, "item"):  # numpy scalar
+        value = value.item()
+    if isinstance(value, int):
+        return str(value)
+    return str(value)
+
+
+def _distinct_values(series: pd.Series, friendly_type: str) -> list[str] | None:
+    """The column's distinct values as text, or None when it should not offer completions.
+
+    None for a continuous column and for one above `DISTINCT_VALUE_CAP`; an empty list only when the
+    column genuinely holds no non-null value. Floats are taken as the continuous case -- a measure
+    like a duration in seconds has no value worth completing, while discrete numbers (a month, a set
+    position) do and are integers.
+    """
+    if friendly_type == "number" and pdt.is_float_dtype(series.dtype):
+        return None
+    uniques = pd.unique(series.dropna())
+    if len(uniques) > DISTINCT_VALUE_CAP:
+        return None
+    texts = [_value_text(v) for v in uniques]
+    # Numbers sort numerically rather than as text, so a month list reads 1,2,...,10 not 1,10,11,2.
+    return sorted(texts, key=float) if friendly_type == "number" else sorted(texts)
+
+
 def _schema(enforced: pd.DataFrame) -> list[dict]:
-    return [{"name": c, "type": _friendly_type(enforced[c])} for c in enforced.columns]
+    columns = []
+    for name in enforced.columns:
+        friendly_type = _friendly_type(enforced[name])
+        column = {"name": name, "type": friendly_type}
+        values = _distinct_values(enforced[name], friendly_type)
+        if values is not None:
+            column["values"] = values
+        columns.append(column)
+    return columns
 
 
 def _run_sql(sql: str, raw: pd.DataFrame, table: str) -> pd.DataFrame:
@@ -93,9 +149,13 @@ def _load_structure(path: Path, columns: set[str], dataset_id: str) -> dict:
 
 
 def build_demo(dataset: dict, *, csv: Path, structure: Path, out_dir: Path) -> None:
-    """Validate a dataset's ESQL examples and write its `<id>.json` (+ a copy of the CSV) into
-    out_dir. `dataset` is the spec: id, label, description, examples[], walkthrough[], and an
-    optional `category` (only used to group datasets in a multi-dataset picker)."""
+    """Validate a dataset's ESQL examples and write its `<id>.json` (+ a copy of the CSV and
+    `dataset.schema.json`) into out_dir. `dataset` is the spec: id, label, description, examples[],
+    walkthrough[], and an optional `category` (only used to group datasets in a multi-dataset
+    picker). Each example needs a `clause`; `tier` defaults to "example".
+
+    Two things fail the build rather than shipping: an example whose ESQL and SQL disagree, and an
+    output document that does not match `DATASET_SCHEMA`."""
     ds = dataset
     raw = pd.read_csv(csv)
     enforced = _enforce_allowed_dtypes(raw)
@@ -108,7 +168,10 @@ def build_demo(dataset: dict, *, csv: Path, structure: Path, out_dir: Path) -> N
             {
                 "id": ex["id"],
                 "tier": ex.get("tier", "example"),
-                "clause": ex.get("clause", "example"),
+                # No default: "clause" names which docs stream the example belongs to, and there is
+                # no sensible guess. Omitting it here lets the schema report it as missing rather
+                # than manufacturing a value that is not one of the ones a host knows.
+                **({"clause": ex["clause"]} if "clause" in ex else {}),
                 "title": ex["title"],
                 "description": ex["description"],
                 "esql": " ".join(ex["esql"].split()),
@@ -147,7 +210,19 @@ def build_demo(dataset: dict, *, csv: Path, structure: Path, out_dir: Path) -> N
         "walkthrough": walkthrough,
     }
 
+    # Validate before writing, so a shape error fails the build here rather than shipping an asset a
+    # host reads as `undefined`. Same standing as the ESQL<->SQL check above: the whole point of this
+    # module is that a broken demo asset cannot be written.
+    try:
+        validate_dataset(out)
+    except DatasetSchemaError as error:
+        raise SystemExit(f"[{ds['id']}] {error}") from None
+
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / f"{ds['id']}.json").write_text(json.dumps(out, indent=2))
     (out_dir / f"{ds['id']}.csv").write_bytes(csv.read_bytes())
-    print(f"\nWrote {ds['id']} -> {out_dir / f'{ds['id']}.json'} (+ copied {ds['id']}.csv)")
+    # The shape every <id>.json in this directory satisfies, emitted verbatim beside them the way
+    # grammar.json publishes esql.GRAMMAR. A host generates its types from this rather than keeping
+    # a hand-written copy of the shape in step with it.
+    (out_dir / "dataset.schema.json").write_text(json.dumps(DATASET_SCHEMA, indent=2))
+    print(f"\nWrote {ds['id']} -> {out_dir / f'{ds['id']}.json'} (+ copied {ds['id']}.csv, dataset.schema.json)")

@@ -1,6 +1,6 @@
 [project]
 name = "esql"
-version = "1.6.0"
+version = "1.7.0"
 description = "ESQL is a SQL-based query language for OLAP that computes multiple aggregates across groups without nested subqueries or repeated grouping."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -18,6 +18,10 @@ dev = [
     "pytest>=8.3.5",
     "pytest-timeout>=2.3.1",
     "python-dotenv>=1.0",
+    # Dev only, deliberately: the engine's runtime deps get vendored into Pyodide for the browser
+    # demo, and jsonschema pulls a compiled extension. It is here purely so
+    # tests/test_dataset_schema.py can prove esql.dataset_schema's own walker agrees with it.
+    "jsonschema>=4.21",
     "ruff>=0.11.0",
     "mypy>=1.10",
     "pandas-stubs>=2.2",

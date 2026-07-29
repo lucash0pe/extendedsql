@@ -11,46 +11,89 @@ private.
 
 ---
 
-## Stream F — a front-end package (`frontend/`)
+## Stream F — a front-end package (`frontend/`) — STOOD DOWN (2026-07-29)
 
-**Decision (2026-07-28).** The ESQL demo front-end moves here from `portfolio/site/esql/` and ships
-as an installable package, so the demo can be repurposed and any host pulls it in.
+**Reversed before anything was built.** Portfolio decided against consuming it, so F1–F4 are parked,
+F5 shipped in a different form (see Stream J below), and F6 is moot while nothing moves. No
+`package.json`, no second CI lane, no tarball: this repo stays Python-only.
 
-This is a real change to the repo's character. There is no JavaScript surface here today
-(`pyproject.toml`, no `package.json`), so this adds a Node toolchain and a second CI lane alongside
-`make check`.
+The reasoning, since it inverts what the stream said:
 
-The precedent is already here: `esql/demokit.py` builds the demo assets, and `public/docs/syntax.md`
-is this repo's language prose. The strongest argument for the move is the contract, not reuse.
-`demokit` *writes* the dataset JSON while the front-end *reads* it, and today nothing enforces that
-because the two halves sit in different repos.
+- **The contract argument is better served in Python.** Stream F's own strongest claim was that
+  `demokit` *writes* the dataset JSON while the front-end *reads* it, with nothing enforcing that
+  across two repos. Moving the reader here fixes it; declaring the shape here fixes it better and
+  cheaper. `build_demo` took `dataset: dict` and `json.dumps`'d it, untyped at the exact seam the
+  stream existed to protect. That is what J1 does instead.
+- **The assist cannot move.** It answers "what can go here" synchronously on every keystroke,
+  including before Pyodide has warmed (~20 MB; curated results paint from the build while it loads).
+  Anything requiring an engine call puts the caret menu behind that load, on the interaction that
+  teaches the language.
+- **The components cannot move** without dragging the host's design tokens with them.
+- That leaves reuse, which Stream F itself ranked second, and which stays theoretical until a second
+  host exists. The assist is pure functions over published data, so it stays portable if one ever does.
 
-- [ ] **F1. The contract and the pure logic.** The dataset/grammar types, the caret analysis
-  ("where am I, what can go here"), and the display-only query formatter. Pure TypeScript, no React,
-  no styling. Safe to take first because it has no design coupling.
-- [ ] **F2. The components.** The query editor and its completion menu, the column groups, the result
-  table, the clause reference cards. Hard requirement: **no bundled CSS and no palette.** Ship class
-  strings against a token contract the host provides (`--bg`, `--surface`, `--fg`, `--accent`,
-  `--line`), the way `data-agent-framework`'s extracted library already does.
-- [ ] **F3. The demo view**, so a host drops in one component.
-- [ ] **F4. Distribution.** Committed tarball consumed through a `file:` dependency. No npm registry.
-- [ ] **F5. Keep the asset contract honest.** With the reader here, `demokit` should validate what it
-  emits against the same types the front-end consumes.
+The seam that replaces it is the one already working: **the engine publishes what is legal, the host
+does the caret work.** `esql.GRAMMAR` in v1.5.0 was the right move and portfolio now reads it in
+place of rules it used to hand-mirror.
 
-**Blocking constraints from the consumer**, all API obligations here:
+---
 
-- telemetry is an injected callback, never an import
-- datasets are handed in, never fetched or bundled
-- the Pyodide and wheel base URLs are parameters, because where those are served is a host decision
+## Stream J — publishing the demo asset contract
 
-- [ ] **F6. `CLAUDE.md` needs revising when F2 lands.** Its Security section currently states that
-  demo security "lives in the sibling `portfolio/` repo, not here." Once the front-end is here that is
-  wrong. The client-side controls (CSP, vendored runtime integrity, no-exfil) stay portfolio's because
-  they are deploy-side, but the sentence has to say so accurately rather than by location.
+The counterpart to Stream G. G published what is *legal* (the grammar); this publishes the *shape*
+of what `demokit` writes, and the *data* a host needs to complete a value. Both items below are
+built and green; version bumped `1.6.0 -> 1.7.0`, **not yet committed, tagged or pushed**. The gate
+is green at **207 tests** (was 162).
+
+- [x] **J1. `dataset.schema.json`.** Shipped as `esql.DATASET_SCHEMA` (`src/esql/dataset_schema.py`):
+  the `<id>.json` asset declared as JSON Schema. `build_demo` validates its output dict against it
+  before writing anything, and emits the schema into the same output dir as `grammar.json`. Same
+  pattern as the grammar export — emitted verbatim, no renaming step, so there is no mapping to fall
+  out of step. Portfolio generates its TypeScript types from it rather than hand-keeping them.
+
+  **Why the validator is local rather than `jsonschema`.** The engine's runtime deps get vendored
+  into Pyodide for the browser demo, and `jsonschema` pulls a compiled extension (`rpds-py`), so it
+  cannot become a runtime dependency. `validate_dataset` walks the subset actually used (`$ref`,
+  `type`, `enum`, `properties`, `required`, `additionalProperties`, `items`) in ~40 lines, and
+  `jsonschema` stays a dev dependency where `tests/test_dataset_schema.py` cross-checks that the two
+  agree on all 16 documents it covers. A keyword the walker does not implement **raises** rather than
+  being skipped, so an unimplemented keyword cannot silently weaken validation.
+
+  Two things it caught immediately: `build_demo` defaulted a missing `clause` to `"example"`, which
+  is not one of the values a host knows (`start`/`SELECT`/`WHERE`/`HAVING`/`OVER`/`complex`) — the
+  default is gone and the schema now names it as missing; and validation runs *before* `out_dir` is
+  created, so a failed build writes nothing rather than leaving a partial asset.
+
+- [x] **J2. Capped distinct values per column.** Each `schema` entry now carries `values: string[]`,
+  so `WHERE song = '` can offer real song names from build-time data with no Pyodide round trip,
+  which is what keeps the host's assist pure and synchronous. Capped at
+  `demokit.DISTINCT_VALUE_CAP = 500` and omitted entirely above it — absent means "do not offer
+  completions", which is distinct from `[]`, "there are none". Floats are taken as the continuous
+  case (a duration in seconds has no value worth completing) while discrete numbers — a month, a set
+  position — are integers and do get values. Values are the datum and not the literal syntax
+  (unquoted, bools lowercase, dates ISO); the host quotes according to the entry's `type`.
+
+  It lives here rather than in portfolio's `backend/esql/` because `build_demo` composes the whole
+  output dict — a dataset's `demo.py` only hands it a spec.
+
+**Portfolio-side follow-up, one line, required.** `DATASET_SCHEMA` is a new name in `esql.__all__`,
+so `backend/esql/build.sh`'s export guard fires on the next wheel: it exits with "esql now exports
+['DATASET_SCHEMA'], which grammar.json does not account for." That is the guard working as designed.
+The fix is adding `"DATASET_SCHEMA"` to its `NOT_GRAMMAR` set — it is not a token set. Checked
+against the assets portfolio ships today: both `songs.json` and `coffee.json` validate against the
+schema unchanged, so nothing else breaks.
 
 ---
 
 ## Stream G — grammar export
+
+**`slot_kinds` + `accepts` are now a live extension point with a real consumer.** v1.6.0's
+`entry_value` reached the demo as *nothing*: it is a new slot kind plus `SUCH THAT`'s `accepts`
+growing, with no new `esql.__all__` export, so portfolio's export-diff guard did not fire, and its
+per-clause suggestion logic branches on clause *names* rather than on `accepts`. Same shape as the
+`HAS` finding one level up. The fix is portfolio-side and queued there; nothing to do here. Worth
+recording because it sets the obligation going the other way: **new grammar surface has to be
+expressible in `slot_kinds`/`accepts`**, since that is the channel a host actually reads.
 
 The front-end currently hand-mirrors rules this engine owns: which slot kinds each clause accepts,
 that `count` is the only aggregate legal on a non-numeric column (mirroring `_parse_aggregate`), that
@@ -89,6 +132,20 @@ H1 shipped; see the settled record. What it leaves open:
   so the grain-bridging semi-join in the settled record below could not keep that name. Decided
   2026-07-28: it is **`HAS`** (`WHERE date HAS song = 'Dark Star'`). Nothing was built under the old
   name, so this was a rename in the design notes only, done here and in `CLAUDE.md`.
+
+---
+
+## Toolchain note — always `uv run python -m <tool>`
+
+`uv run pytest` does **not** run this project's pytest. The console script fails to spawn under the
+project environment and the call falls through to a system Python 3.11
+(`/Library/Frameworks/Python.framework/Versions/3.11/bin/pytest`), which then errors on 3.12-only
+syntax. Recorded so it is not rediscovered a third time: this is the same failure as the `uv run
+mypy` bug fixed in v1.5.0, where `make typecheck` had been erroring out before mypy ran and the
+recorded error count went stale for months.
+
+Nothing in the repo is affected — the `Makefile` and `.github/workflows/ci.yaml` both use
+`uv run python -m pytest`, which is the form every target should keep using.
 
 ---
 
@@ -341,8 +398,10 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 
 The demo frontend lives in `portfolio/site/esql/` and its data in `portfolio/backend/esql/`
 (`<name>/demo.py`, which calls `esql.demokit.build_demo`). The former sibling `datasets` repo was
-folded into `portfolio` in 2026-07. This repo is engine-only, with `sales.csv` as its sole fixture.
-See Stream F above: the demo frontend is slated to move here.
+folded into `portfolio` in 2026-07. This repo is engine-only, with `sales.csv` as its sole fixture,
+and stays that way: the move was considered as Stream F and stood down on 2026-07-29. The engine
+publishes what a host needs — `GRAMMAR` (what is legal), `DATASET_SCHEMA` (the asset shape) and each
+column's `values` (what can go in a literal) — and the host does the rendering and the caret work.
 
 - [x] Curated ESQL<->SQL example set + expected result tables: now produced per dataset by
   `esql.demokit.build_demo` (SQL-validated), out of this repo.

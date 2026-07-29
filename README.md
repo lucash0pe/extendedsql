@@ -148,6 +148,26 @@ esql.GRAMMAR["aggregates"]["numeric_only"]       # ['sum', 'avg', 'min', 'max']
 every claim it makes by running the parser: each listed operator must parse in that clause and each
 unlisted one must raise. A rule added to the parser without updating the description fails there.
 
+### The demo asset shape
+
+`esql.demokit.build_demo` is build-time tooling that validates a dataset's ESQL examples against
+their SQL equivalents and writes the JSON a host demo front-end reads. `esql.DATASET_SCHEMA` is that
+JSON's declared shape, as JSON Schema, exported the same way `GRAMMAR` is — a plain dict, published
+verbatim, so a host generates its own types from it rather than hand-keeping a copy.
+
+```python
+import esql
+
+esql.DATASET_SCHEMA["$defs"]["Example"]["required"]        # what every example carries
+esql.DATASET_SCHEMA["$defs"]["ColumnType"]["enum"]         # ['string', 'number', 'boolean', 'date']
+```
+
+`build_demo` validates its output against the schema before writing anything and emits the schema
+beside the assets as `dataset.schema.json`, so a shape error fails the build rather than reaching a
+consumer as a missing key. Each column in the asset's `schema` also carries a `values` list — its
+distinct values as text, capped, and omitted for continuous columns — so an editor can complete
+`WHERE state = '` from build-time data without calling the engine.
+
 ## ESQL Input Data and Query Syntax
 
 ESQL can only handle datatables with strings, numbers, booleans, and dates. When the esql.query is called on a DataFrame, these types will be enforced on values in the Dataframe. Dates should be in `yyyy-mm-dd` format to ensure that they are handled correctly. Columns with other datatypes will be casted and handled as strings.
