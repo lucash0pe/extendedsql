@@ -42,7 +42,10 @@ KEYWORDS = ("SELECT", "OVER", "WHERE", "SUCH THAT", "HAVING", "ORDER BY")
 AGGREGATE_FUNCTIONS = ("sum", "avg", "min", "max", "count")
 
 # Comparison operators valid in WHERE, SUCH THAT and HAVING conditions. `==` is read as `=`.
-CONDITIONAL_OPERATORS = (">=", "<=", "!=", "==", ">", "<", "=")
+# `CONTAINS` is a case-insensitive substring test over a text column and is the one operator here
+# that is a word rather than a symbol, so it matches only on word boundaries and only in WHERE and
+# SUCH THAT: a HAVING condition compares an aggregate, which is always numeric.
+CONDITIONAL_OPERATORS = ("CONTAINS", ">=", "<=", "!=", "==", ">", "<", "=")
 
 
 ###########################################################################
@@ -403,6 +406,12 @@ def _parse_aggregate_condition(
             token=condition,
         )
     left, operator, right = split
+    if operator == "CONTAINS":
+        raise ParsingError(
+            ParsingErrorType.HAVING_CLAUSE,
+            f"CONTAINS compares text and HAVING compares an aggregate, which is numeric: '{condition}'",
+            token=condition,
+        )
     aggregate: GlobalAggregate | GroupAggregate = _parse_aggregate(
         aggregate=left, groups=groups, column_dtypes=column_dtypes, error_type=ParsingErrorType.HAVING_CLAUSE
     )
@@ -521,6 +530,17 @@ def _parse_condition_value(
             error_type, f"Invalid column reference or value in condition: '{condition}'", token=condition
         )
 
+    elif operator == "CONTAINS":
+        if not pd.api.types.is_string_dtype(column_dtype):
+            raise ParsingError(
+                error_type, f"CONTAINS needs a text column in condition: '{condition}'", token=condition
+            )
+        if not _is_quoted(value):
+            raise ParsingError(
+                error_type, f"CONTAINS needs a quoted text value in condition: '{condition}'", token=condition
+            )
+        return value[1:-1], False
+
     elif operator in ["=", "==", "!="]:
         if value.lower() in ["true", "false"] and pd.api.types.is_bool_dtype(column_dtype):
             return value.lower() == "true", False
@@ -530,9 +550,7 @@ def _parse_condition_value(
                 return datetime.strptime(date_str, "%Y-%m-%d").date(), False
             except ValueError:
                 raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition) from None
-        elif (
-            (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"'))
-        ) and pd.api.types.is_string_dtype(column_dtype):
+        elif _is_quoted(value) and pd.api.types.is_string_dtype(column_dtype):
             return value[1:-1], False
         elif pd.api.types.is_numeric_dtype(column_dtype):
             try:
@@ -569,10 +587,37 @@ def _split_condition(condition: str) -> tuple[str, str, str] | None:
 
         if not in_single and not in_double:
             for op in sorted(CONDITIONAL_OPERATORS, key=len, reverse=True):
-                if condition[i : i + len(op)] == op:
+                if _operator_starts_at(condition, i, op):
                     return condition[:i].strip(), op, condition[i + len(op) :].strip()
 
     return None
+
+
+def _operator_starts_at(condition: str, index: int, operator: str) -> bool:
+    """Whether `operator` occupies `condition` at `index`.
+
+    A word operator (CONTAINS) has to sit on word boundaries, or a column named `contains_tax`
+    would split as the operator. A symbol operator (>=) cannot collide that way and matches
+    directly. The comparison is case-insensitive because `_prepare_query` lowercases everything
+    outside quotes, so the canonical uppercase spelling is what callers see back.
+    """
+    candidate = condition[index : index + len(operator)]
+    if not operator.isalpha():
+        return candidate == operator
+    if candidate.lower() != operator.lower():
+        return False
+    before = condition[index - 1] if index > 0 else " "
+    after = condition[index + len(operator)] if index + len(operator) < len(condition) else " "
+    return not _is_word_char(before) and not _is_word_char(after)
+
+
+def _is_word_char(char: str) -> bool:
+    return char.isalnum() or char == "_"
+
+
+def _is_quoted(value: str) -> bool:
+    """Whether `value` is a quoted literal: both quotes present, matched, and the same kind."""
+    return len(value) >= 2 and ((value[0] == "'" and value[-1] == "'") or (value[0] == '"' and value[-1] == '"'))
 
 
 def _has_wrapping_parenthesis(condition: str) -> bool:

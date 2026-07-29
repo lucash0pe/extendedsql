@@ -198,6 +198,11 @@ def _evaluate_actual_vs_expected_value(
         return actual_value <= condition_value
     elif operator == "!=":
         return actual_value != condition_value
+    elif operator == "CONTAINS":
+        # Case-insensitive by design: a case-sensitive substring search is rarely what a query
+        # means, and offering both would need extra syntax to pick between them. This also matches
+        # sqlite's ASCII-case-insensitive LIKE '%x%', which is what `demokit` validates against.
+        return str(condition_value).lower() in str(actual_value).lower()
     else:
         raise RuntimeError(f"Unknown operator in condition: '{operator}'")
 

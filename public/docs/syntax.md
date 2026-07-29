@@ -1,3 +1,4 @@
+
 # ExtendedSQL Syntax
 
 This document contains information about writing ESQL queries. I will be providing examples as if I was writing a queries for the 'sales' table. The sales table can be found [here](/public/data/sales.csv) or at `/public/data/sales.csv`.
@@ -31,7 +32,7 @@ ORDER BY [variable order]
 
 The query language has 6 keywords: SELECT, OVER, WHERE, SUCH THAT, HAVING, and ORDER BY. The follpowing sections explore the the syntax and use cases of each keyword. ESQL queries do not contain a FROM clause like in SQL since a datatable must be passed in through the DataFrame accessor or through the API. Queries do not require all of the keywords, but variable projection (in the [SELECT](#select) clause) must be performed for the query to produce an output.
 
-ESQL is not case sensitive, including the keywords. Only string comparison in the WHERE and SUCH THAT clauses are case sensitive. 
+ESQL is not case sensitive, including the keywords. Only string comparison in the WHERE and SUCH THAT clauses are case sensitive. The exception is [`CONTAINS`](#where), which is deliberately case insensitive. 
 
 
 ## SELECT
@@ -64,7 +65,7 @@ The following would also be a valid OVER clause:
 
 The WHERE clause determines which rows will be filtered out of the inputted datatable before computing any aggregates. The resulting table will be used to compute any global aggregates.
 
-WHERE clause conditions can include any column in the inputted datatable followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing. 
+WHERE clause conditions can include any column in the inputted datatable followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`, `CONTAINS`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing. 
 
 Conditions can be combined with `AND` and `OR`. The `NOT` operator can also be used for negation. 
 
@@ -74,11 +75,27 @@ Below is an example of a valid WHERE clause:
 
 `WHERE NOT (quant >= 500 AND state = 'CT') OR credit`
 
+### CONTAINS
+
+`CONTAINS` keeps rows whose text column contains the given substring anywhere in it, so a filter is not limited to exact equality:
+
+`WHERE prod CONTAINS 'err'`
+
+Three rules apply to it and not to the other operators:
+
+- **It is case insensitive.** `'err'`, `'ERR'` and `'Err'` all match `Cherry`. This is the same behavior as SQL's `LIKE '%err%'`.
+- **Both sides must be text.** The column has to be a text column and the value has to be quoted. `quant CONTAINS '5'` is a parsing error, not a match against the digits of a number.
+- **It is not available in HAVING**, which compares aggregates, and every aggregate is numeric.
+
+It works in [SUCH THAT](#such-that) exactly as it does here, prepended by a group name:
+
+`SELECT venue, g1.quant.sum OVER g1 SUCH THAT g1.prod CONTAINS 'err'`
+
 
 ## SUCH THAT
 The SUCH THAT clause determines which of the remaining rows will be used to compute aggregates within a group. The SUCH THAT clause should contain a section for each defined group in the [OVER](#over) clause. These sections must be divided by commas, must contain only one group, and must not contain a group that is already defined in another section of the SUCH THAT clause.
 
-SUCH THAT clause conditions can include any column in the inputted datatable but every column name must start with the group name of the section combined using dot notation (e.g. `group1.month`). The group and column is followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing.
+SUCH THAT clause conditions can include any column in the inputted datatable but every column name must start with the group name of the section combined using dot notation (e.g. `group1.month`). The group and column is followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`, `CONTAINS`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing.
 
 Conditions can be combined with `AND` and `OR`. The `NOT` operator can also be used for negation. 
 
@@ -104,7 +121,7 @@ The HAVING clause determines which of the grouped rows will be included in the o
 
 Like in the [SELECT](#select) clause, aggregates can come in the form `column.function` or `group.column.function`. The HAVING clause is not limited to the aggregates defined in the SELECT clause. The only limitation is that they must be contain an aggregate function (`sum`, `avg`, `min`, `max`, `count`) and a column that contains numerical data (e.g. `quant` from the `sales` table) unless the aggregate function used is `count`. They can also contain a group defined in the `OVER` clause.
 
-HAVING clause conditions must include an aggregate followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to. The comparison value must be numeric, as all aggregates are computed numeric values. 
+HAVING clause conditions must include an aggregate followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to. The comparison value must be numeric, as all aggregates are computed numeric values. For that reason [`CONTAINS`](#contains) is the one conditional operator HAVING does not accept. 
 
 Conditions can be combined with `AND` and `OR`. The `NOT` operator can be used for negation. 
 
