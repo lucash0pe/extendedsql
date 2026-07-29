@@ -2,7 +2,7 @@
 
 Guidance for working in the `extendedsql` (ESQL) repo. See the umbrella
 `../CLAUDE.md` for how this engine fits the wider `tech-portfolio/`, and `README.md`
-plus `BACKLOG.md` for syntax, theory, and tracked work.
+plus `.claude/status.md` for syntax, theory, and tracked work.
 
 ## What this is
 
@@ -24,7 +24,7 @@ uv sync --extra dev   # runtime + dev deps
 make check            # the gate: ruff lint + pytest
 make test             # tests only
 make lint             # ruff
-make typecheck        # mypy (advisory; see BACKLOG.md)
+make typecheck        # mypy (advisory; see .claude/status.md)
 make build            # wheel + sdist into dist/ (the in-browser demo installs this wheel)
 ```
 
@@ -67,7 +67,7 @@ controls (Pyodide sandbox, CSP, vendored-wheel and runtime integrity, no-exfil, 
 report/error funnel) are owned and documented in `portfolio/` per §5 of the standard. Do
 not duplicate or re-implement them in this engine.
 
-When adding features (for example the pending `CONTAINS` semi-join or nested / multi-grain
-aggregation in `BACKLOG.md`), preserve this property: parse to typed AST and interpret
+When adding features (for example the pending `HAS` semi-join or nested / multi-grain
+aggregation in `.claude/status.md`), preserve this property: parse to typed AST and interpret
 structurally, bind identifiers to allowlists and values as data, never build or evaluate
 code or SQL from query text.

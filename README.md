@@ -151,11 +151,11 @@ uv sync --extra dev   # install runtime + dev dependencies
 make check            # the gate: ruff lint + pytest
 make test             # tests only
 make lint             # ruff
-make typecheck        # mypy (advisory; see BACKLOG.md)
+make typecheck        # mypy (advisory; see .claude/status.md)
 make build            # build the wheel + sdist into dist/
 ```
 
 The engine lives in `src/esql/` (`parser/` turns a query into a typed clause structure,
-`execution/` computes the grouped result via the Φ-operator algorithm). See `BACKLOG.md` for
+`execution/` computes the grouped result via the Φ-operator algorithm). See `.claude/status.md` for
 tracked work.
 

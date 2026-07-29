@@ -16,7 +16,7 @@ format:
 	uv run ruff format src tests
 
 # Advisory: mypy is configured for parity but not yet clean over the dynamic
-# query evaluator (union comparisons, TypedDict key-narrowing). See BACKLOG.md.
+# query evaluator (union comparisons, TypedDict key-narrowing). See .claude/status.md.
 typecheck:
 	uv run mypy
 
