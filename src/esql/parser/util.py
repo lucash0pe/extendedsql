@@ -23,16 +23,43 @@ from esql.parser.types import (
     ParsedSuchThatClause,
     ParsedSuchThatSection,
     ParsedWhereClause,
+    SemiJoinCondition,
     SimpleCondition,
     SimpleGroupCondition,
 )
+
+###########################################################################
+# Grammar
+###########################################################################
+# The token sets the parser accepts. They are the grammar's only definition: the parser reads
+# them here, `public/docs/syntax.md` describes them in prose, and downstream docs (the portfolio
+# ESQL demo) generate against them rather than restating them.
+
+# The six clause keywords, in the order a query must write them.
+KEYWORDS = ("SELECT", "OVER", "WHERE", "SUCH THAT", "HAVING", "ORDER BY")
+
+# The aggregate functions valid in `column.function` / `group.column.function`. All require a
+# numeric column except `count`, which accepts any dtype.
+AGGREGATE_FUNCTIONS = ("sum", "avg", "min", "max", "count")
+
+# Comparison operators valid in WHERE, SUCH THAT and HAVING conditions. `==` is read as `=`.
+# `CONTAINS` is a case-insensitive substring test over a text column and is the one operator here
+# that is a word rather than a symbol, so it matches only on word boundaries and only in WHERE and
+# SUCH THAT: a HAVING condition compares an aggregate, which is always numeric.
+CONDITIONAL_OPERATORS = ("CONTAINS", ">=", "<=", "!=", "==", ">", "<", "=")
+
+# The semi-join predicate, valid only in WHERE. `<key> HAS <condition>` keeps rows whose `<key>`
+# value belongs to some row satisfying `<condition>`, which is how a query reaches across grains
+# without a join. It is not a comparison and so is not one of CONDITIONAL_OPERATORS: what follows
+# it is a whole condition, not a value.
+SEMI_JOIN_OPERATOR = "HAS"
 
 
 ###########################################################################
 # Keyword & Clause Extraction
 ###########################################################################
 def get_keyword_clauses(query: str) -> dict[str, str | None]:
-    keyword_clauses = {"SELECT": None, "OVER": None, "WHERE": None, "SUCH THAT": None, "HAVING": None, "ORDER BY": None}
+    keyword_clauses: dict[str, str | None] = dict.fromkeys(KEYWORDS)
 
     # Find the location of each keyword in the query.
     keyword_indices = []
@@ -55,17 +82,27 @@ def get_keyword_clauses(query: str) -> dict[str, str | None]:
         if keyword_index == -1:
             continue
         if keyword_index < previous_index:
-            raise ParsingError(ParsingErrorType.CLAUSE_ORDER, f"Unexpected position of '{keyword.strip().upper()}'")
+            raise ParsingError(
+                ParsingErrorType.CLAUSE_ORDER, f"Unexpected position of '{keyword.strip().upper()}'", token=keyword
+            )
         clause = query[previous_index + len(previous_keyword) : keyword_index].strip()
         if not clause:
-            raise ParsingError(ParsingErrorType.MISSING_CLAUSE, f"No {previous_keyword.strip().upper()} argument found")
+            raise ParsingError(
+                ParsingErrorType.MISSING_CLAUSE,
+                f"No {previous_keyword.strip().upper()} argument found",
+                token=previous_keyword,
+            )
         keyword_clauses[previous_keyword] = clause
         previous_index = keyword_index
         previous_keyword = keyword
 
     clause = query[previous_index + len(previous_keyword) :].strip()
     if not clause:
-        raise ParsingError(ParsingErrorType.MISSING_CLAUSE, f"No {previous_keyword.strip().upper()} argument found")
+        raise ParsingError(
+            ParsingErrorType.MISSING_CLAUSE,
+            f"No {previous_keyword.strip().upper()} argument found",
+            token=previous_keyword,
+        )
     keyword_clauses[previous_keyword] = clause
 
     return keyword_clauses
@@ -76,13 +113,16 @@ def get_keyword_clauses(query: str) -> dict[str, str | None]:
 ###########################################################################
 def parse_over_clause(over_clause: str | None) -> list[str]:
     groups = []
+    # No OVER clause means no groups, not an absent group list. Returning None here made a
+    # group-prefixed aggregate written without OVER (`SELECT x, g1.y.sum`) fail the `group not in
+    # groups` membership test in _parse_aggregate with a TypeError instead of a ParsingError.
     if over_clause is None:
-        return None
+        return groups
     pattern = r"^[a-zA-Z0-9_]+$"
     for group in (group.strip() for group in over_clause.split(",")):
         match = re.match(pattern, group)
         if not match:
-            raise ParsingError(ParsingErrorType.OVER_CLAUSE, f"Invalid group name: '{group}")
+            raise ParsingError(ParsingErrorType.OVER_CLAUSE, f"Invalid group name: '{group}'", token=group)
         groups.append(group)
     return groups
 
@@ -110,10 +150,12 @@ def parse_select_clause(
             if item in column_dtypes:
                 grouping_attributes.append(item)
             else:
-                raise ParsingError(ParsingErrorType.SELECT_CLAUSE, f"Invalid column: '{item}'")
+                raise ParsingError(ParsingErrorType.SELECT_CLAUSE, f"Invalid column: '{item}'", token=item)
         select_items_in_order.append(item)
     if len(grouping_attributes) == 0:
-        raise ParsingError(ParsingErrorType.SELECT_CLAUSE, f"No grouping attributes given: '{select_clause}'")
+        raise ParsingError(
+            ParsingErrorType.SELECT_CLAUSE, f"No grouping attributes given: '{select_clause}'", token=select_clause
+        )
 
     return ParsedSelectClause(
         grouping_attributes=grouping_attributes, aggregates=aggregates, select_items_in_order=select_items_in_order
@@ -151,7 +193,35 @@ def _parse_where_clause(where_clause: str, column_dtypes: dict[str, np.dtype]) -
         condition = where_clause[len(LogicalOperator.NOT.value) + 1 :].strip()
         return NotCondition(operator=LogicalOperator.NOT, condition=_parse_where_clause(condition, column_dtypes))
 
+    # After AND/OR, so `a HAS b = 1 AND c = 2` reads as `(a HAS b = 1) AND (c = 2)`. Parenthesize
+    # to pull a compound condition inside the HAS instead.
+    semi_join = _split_on_semi_join(where_clause)
+    if semi_join:
+        return _parse_semi_join_condition(*semi_join, condition=where_clause, column_dtypes=column_dtypes)
+
     return _parse_simple_condition(where_clause, column_dtypes)
+
+
+def _parse_semi_join_condition(
+    key: str, inner: str, condition: str, column_dtypes: dict[str, np.dtype]
+) -> SemiJoinCondition:
+    if not key:
+        raise ParsingError(
+            ParsingErrorType.WHERE_CLAUSE,
+            f"{SEMI_JOIN_OPERATOR} needs a column before it: '{condition}'",
+            token=condition,
+        )
+    if key not in column_dtypes:
+        raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Invalid column: {key}", token=key)
+    if not inner:
+        raise ParsingError(
+            ParsingErrorType.WHERE_CLAUSE,
+            f"{SEMI_JOIN_OPERATOR} needs a condition after it: '{condition}'",
+            token=condition,
+        )
+    return SemiJoinCondition(
+        key=key, operator=SEMI_JOIN_OPERATOR, condition=_parse_where_clause(inner, column_dtypes)
+    )
 
 
 def _parse_simple_condition(condition: str, column_dtypes: dict[str, np.dtype]) -> SimpleCondition:
@@ -160,13 +230,15 @@ def _parse_simple_condition(condition: str, column_dtypes: dict[str, np.dtype]) 
     if not split:
         if condition in column_dtypes and pd.api.types.is_bool_dtype(column_dtypes[condition]):
             return SimpleCondition(column=condition, operator="=", value=True, is_emf=False)
-        raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"No conditional operator found in condition: '{condition}'")
+        raise ParsingError(
+            ParsingErrorType.WHERE_CLAUSE, f"No conditional operator found in condition: '{condition}'", token=condition
+        )
 
     column, operator, value = split
     if column not in column_dtypes:
-        raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Invalid column: {column}")
+        raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Invalid column: {column}", token=column)
     if operator and value == "":
-        raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Missing value for condition: {condition}")
+        raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Missing value for condition: {condition}", token=condition)
 
     parsed_value, is_emf = _parse_condition_value(
         column_dtype=column_dtypes[column],
@@ -198,7 +270,9 @@ def parse_such_that_clause(
     for section in parsed_such_that_clause:
         group = find_group_in_such_that_section(section)
         if group in groups_in_parsed_clause:
-            raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, f"Multiple sections contain group '{group}'.")
+            raise ParsingError(
+                ParsingErrorType.SUCH_THAT_CLAUSE, f"Multiple sections contain group '{group}'.", token=group
+            )
         groups_in_parsed_clause.add(group)
     return parsed_such_that_clause
 
@@ -228,6 +302,7 @@ def _parse_such_that_section(
                 ParsingErrorType.SUCH_THAT_CLAUSE,
                 f"Multiple groups found in a clause: '{section}'\n"
                 "Each comma separated clause must contain only one group.",
+                token=section,
             )
         return CompoundGroupCondition(operator=LogicalOperator.OR, conditions=parsed_or_conditions)
 
@@ -242,6 +317,7 @@ def _parse_such_that_section(
                 ParsingErrorType.SUCH_THAT_CLAUSE,
                 f"Multiple groups found in a clause: '{section}'\n"
                 "Each comma separated clause must contain only one group.",
+                token=section,
             )
         return CompoundGroupCondition(operator=LogicalOperator.AND, conditions=parsed_and_conditions)
 
@@ -257,12 +333,15 @@ def _parse_such_that_section(
             group_found = group
             break
     if not group_found:
-        raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, f"No valid group found in condition: '{section}'")
+        raise ParsingError(
+            ParsingErrorType.SUCH_THAT_CLAUSE, f"No valid group found in condition: '{section}'", token=section
+        )
 
     if any(other_group + "." in section for other_group in groups if other_group != group_found):
         raise ParsingError(
             ParsingErrorType.SUCH_THAT_CLAUSE,
-            f"Multiple groups found in a clause: '{section}'\nEach comma seperated clause must contain only one group.",
+            f"Multiple groups found in a clause: '{section}'\nEach comma separated clause must contain only one group.",
+            token=section,
         )
 
     return _parse_simple_group_condition(section, group_found, column_dtypes)
@@ -272,22 +351,33 @@ def _parse_simple_group_condition(
     condition: str, group: str, column_dtypes: dict[str, np.dtype]
 ) -> SimpleGroupCondition:
     condition = condition.strip()
+    if _split_on_semi_join(condition):
+        raise ParsingError(
+            ParsingErrorType.SUCH_THAT_CLAUSE,
+            f"{SEMI_JOIN_OPERATOR} filters rows before grouping, so it belongs in WHERE, "
+            f"not SUCH THAT: '{condition}'",
+            token=condition,
+        )
     split = _split_condition(condition)
     if not split:
         if condition.startswith(group + "."):
             column = condition[len(group) + 1 :].strip()
             if column in column_dtypes and pd.api.types.is_bool_dtype(column_dtypes[column]):
                 return SimpleGroupCondition(group=group, column=column, operator="=", value=True, is_emf=False)
-        raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, f"Invalid condition: '{condition}'")
+        raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, f"Invalid condition: '{condition}'", token=condition)
 
     left, operator, value = split
     if not left.startswith(group + "."):
-        raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, f"Invalid group for condition: '{condition}'")
+        raise ParsingError(
+            ParsingErrorType.SUCH_THAT_CLAUSE, f"Invalid group for condition: '{condition}'", token=condition
+        )
     column = left[len(group) + 1 :]
     if column not in column_dtypes:
-        raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, f"Invalid column: '{column}'")
+        raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, f"Invalid column: '{column}'", token=column)
     if operator and value == "":
-        raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, f"Missing value for condition: {condition}")
+        raise ParsingError(
+            ParsingErrorType.SUCH_THAT_CLAUSE, f"Missing value for condition: {condition}", token=condition
+        )
 
     parsed_value, is_emf = _parse_condition_value(
         column_dtype=column_dtypes[column],
@@ -352,8 +442,24 @@ def _parse_aggregate_condition(
     condition = condition.strip()
     split = _split_condition(condition)
     if not split:
-        raise ParsingError(ParsingErrorType.HAVING_CLAUSE, f"No conditional operator found in condition: '{condition}'")
+        raise ParsingError(
+            ParsingErrorType.HAVING_CLAUSE,
+            f"No conditional operator found in condition: '{condition}'",
+            token=condition,
+        )
     left, operator, right = split
+    if operator == "CONTAINS":
+        raise ParsingError(
+            ParsingErrorType.HAVING_CLAUSE,
+            f"CONTAINS compares text and HAVING compares an aggregate, which is numeric: '{condition}'",
+            token=condition,
+        )
+    if _split_on_semi_join(condition):
+        raise ParsingError(
+            ParsingErrorType.HAVING_CLAUSE,
+            f"{SEMI_JOIN_OPERATOR} filters rows, so it belongs in WHERE, not HAVING: '{condition}'",
+            token=condition,
+        )
     aggregate: GlobalAggregate | GroupAggregate = _parse_aggregate(
         aggregate=left, groups=groups, column_dtypes=column_dtypes, error_type=ParsingErrorType.HAVING_CLAUSE
     )
@@ -361,7 +467,9 @@ def _parse_aggregate_condition(
     try:
         numeric_value = float(right)
     except ValueError:
-        raise ParsingError(ParsingErrorType.HAVING_CLAUSE, f"Invalid value for condition: {condition}") from None
+        raise ParsingError(
+            ParsingErrorType.HAVING_CLAUSE, f"Invalid value for condition: {condition}", token=condition
+        ) from None
 
     if "group" in aggregate:
         if aggregate not in aggregates["group_specific"]:
@@ -381,12 +489,15 @@ def parse_order_by_clause(order_by_clause: str | None, number_of_select_grouping
     try:
         order_value = int(order_by_clause.strip())
     except ValueError:
-        raise ParsingError(ParsingErrorType.ORDER_BY_CLAUSE, f"Invalid value: '{order_by_clause}'") from None
+        raise ParsingError(
+            ParsingErrorType.ORDER_BY_CLAUSE, f"Invalid value: '{order_by_clause}'", token=order_by_clause
+        ) from None
     if order_value > number_of_select_grouping_attributes or order_value < -number_of_select_grouping_attributes:
         raise ParsingError(
             ParsingErrorType.ORDER_BY_CLAUSE,
             f"{order_by_clause.strip()} out of range of the {number_of_select_grouping_attributes} "
             "grouping attributes provided in the select clause.",
+            token=order_by_clause,
         )
     return order_value
 
@@ -400,37 +511,41 @@ def _parse_aggregate(
     column_dtypes: dict[str, np.dtype],
     error_type=ParsingErrorType.SELECT_CLAUSE or ParsingErrorType.HAVING_CLAUSE,
 ) -> GlobalAggregate | GroupAggregate:
-    AGGREGATE_FUNCTIONS = ["sum", "avg", "min", "max", "count"]
     parts = aggregate.split(".")
 
     # Format: column.aggregate_function
     if len(parts) == 2:
         column, func = parts
         if column not in column_dtypes:
-            raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'")
+            raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'", token=aggregate)
         elif func not in AGGREGATE_FUNCTIONS:
-            raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'")
+            raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'", token=aggregate)
         elif func != "count" and not (pd.api.types.is_any_real_numeric_dtype(column_dtypes[column])):
-            raise ParsingError(error_type, f"Invalid aggregate. Column is not a numeric type: '{aggregate}'")
+            raise ParsingError(
+                error_type, f"Invalid aggregate. Column is not a numeric type: '{aggregate}'", token=aggregate
+            )
         return GlobalAggregate(column=column, function=func)
 
     # Format: group.column.aggregate_function
     elif len(parts) == 3:
         group, column, func = parts
         if group not in groups:
-            raise ParsingError(error_type, f"Invalid aggregate group: '{aggregate}'")
+            raise ParsingError(error_type, f"Invalid aggregate group: '{aggregate}'", token=aggregate)
         elif column not in column_dtypes:
-            raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'")
+            raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'", token=aggregate)
         elif func not in AGGREGATE_FUNCTIONS:
-            raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'")
+            raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'", token=aggregate)
         elif func != "count" and not (pd.api.types.is_any_real_numeric_dtype(column_dtypes[column])):
-            raise ParsingError(error_type, f"Invalid aggregate. Column is not a numeric type: '{aggregate}'")
+            raise ParsingError(
+                error_type, f"Invalid aggregate. Column is not a numeric type: '{aggregate}'", token=aggregate
+            )
         return GroupAggregate(group=group, column=column, function=func)
 
     raise ParsingError(
         error_type,
         f"Invalid aggregate: '{aggregate}'\n"
         "Aggregate must be in the format 'column.function' or 'group.column.function'",
+        token=aggregate,
     )
 
 
@@ -452,14 +567,27 @@ def _parse_condition_value(
                 date_str = value[1:-1].replace("/", "-")
                 return datetime.strptime(date_str, "%Y-%m-%d").date(), False
             except ValueError:
-                raise ParsingError(error_type, f"Invalid date in condition: '{condition}'") from None
+                raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition) from None
         elif pd.api.types.is_numeric_dtype(column_dtype):
             try:
                 value = float(value)
                 return int(value) if value.is_integer() else value, False
             except Exception:
-                raise ParsingError(error_type, f"Invalid value in condition: '{condition}'") from None
-        raise ParsingError(error_type, f"Invalid column reference or value in condition: '{condition}'")
+                raise ParsingError(error_type, f"Invalid value in condition: '{condition}'", token=condition) from None
+        raise ParsingError(
+            error_type, f"Invalid column reference or value in condition: '{condition}'", token=condition
+        )
+
+    elif operator == "CONTAINS":
+        if not pd.api.types.is_string_dtype(column_dtype):
+            raise ParsingError(
+                error_type, f"CONTAINS needs a text column in condition: '{condition}'", token=condition
+            )
+        if not _is_quoted(value):
+            raise ParsingError(
+                error_type, f"CONTAINS needs a quoted text value in condition: '{condition}'", token=condition
+            )
+        return value[1:-1], False
 
     elif operator in ["=", "==", "!="]:
         if value.lower() in ["true", "false"] and pd.api.types.is_bool_dtype(column_dtype):
@@ -469,20 +597,20 @@ def _parse_condition_value(
                 date_str = value[1:-1].replace("/", "-")
                 return datetime.strptime(date_str, "%Y-%m-%d").date(), False
             except ValueError:
-                raise ParsingError(error_type, f"Invalid date in condition: '{condition}'") from None
-        elif (
-            (value.startswith("'") and value.endswith("'")) or (value.startswith('"') and value.endswith('"'))
-        ) and pd.api.types.is_string_dtype(column_dtype):
+                raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition) from None
+        elif _is_quoted(value) and pd.api.types.is_string_dtype(column_dtype):
             return value[1:-1], False
         elif pd.api.types.is_numeric_dtype(column_dtype):
             try:
                 value = float(value)
                 return int(value) if value.is_integer() else value, False
             except Exception:
-                raise ParsingError(error_type, f"Invalid value in condition: '{condition}'") from None
-        raise ParsingError(error_type, f"Invalid column reference or value in condition: '{condition}'")
+                raise ParsingError(error_type, f"Invalid value in condition: '{condition}'", token=condition) from None
+        raise ParsingError(
+            error_type, f"Invalid column reference or value in condition: '{condition}'", token=condition
+        )
 
-    raise ParsingError(error_type, f"Invalid operator in condition: '{condition}'")
+    raise ParsingError(error_type, f"Invalid operator in condition: '{condition}'", token=condition)
 
 
 # TODO: Implement to handle parsing of EMF values
@@ -495,7 +623,6 @@ def _parse_emf_condition_value(value: str):
 # Clause Structure Helper Functions
 ###########################################################################
 def _split_condition(condition: str) -> tuple[str, str, str] | None:
-    CONDITIONAL_OPERATORS = [">=", "<=", "!=", "==", ">", "<", "="]
     in_single = False
     in_double = False
 
@@ -508,10 +635,66 @@ def _split_condition(condition: str) -> tuple[str, str, str] | None:
 
         if not in_single and not in_double:
             for op in sorted(CONDITIONAL_OPERATORS, key=len, reverse=True):
-                if condition[i : i + len(op)] == op:
+                if _operator_starts_at(condition, i, op):
                     return condition[:i].strip(), op, condition[i + len(op) :].strip()
 
     return None
+
+
+def _operator_starts_at(condition: str, index: int, operator: str) -> bool:
+    """Whether `operator` occupies `condition` at `index`.
+
+    A word operator (CONTAINS) has to sit on word boundaries, or a column named `contains_tax`
+    would split as the operator. A symbol operator (>=) cannot collide that way and matches
+    directly. The comparison is case-insensitive because `_prepare_query` lowercases everything
+    outside quotes, so the canonical uppercase spelling is what callers see back.
+    """
+    candidate = condition[index : index + len(operator)]
+    if not operator.isalpha():
+        return candidate == operator
+    if candidate.lower() != operator.lower():
+        return False
+    before = condition[index - 1] if index > 0 else " "
+    after = condition[index + len(operator)] if index + len(operator) < len(condition) else " "
+    return not _is_word_char(before) and not _is_word_char(after)
+
+
+def _is_word_char(char: str) -> bool:
+    return char.isalnum() or char == "_"
+
+
+def _split_on_semi_join(condition: str) -> tuple[str, str] | None:
+    """Split `<key> HAS <inner condition>` on the first top-level HAS, or None if there is none.
+
+    Top level means outside quotes and outside parentheses. A HAS nested inside a parenthesized
+    subexpression belongs to that subexpression and is found when the recursion reaches it, so
+    `a HAS (b HAS c = 1)` splits on the outer one here and the inner one a level down.
+    """
+    in_single = in_double = False
+    depth = 0
+
+    for i, char in enumerate(condition):
+        if char == "'" and not in_double:
+            in_single = not in_single
+        elif char == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+
+        if in_single or in_double or depth:
+            continue
+        if _operator_starts_at(condition, i, SEMI_JOIN_OPERATOR):
+            return condition[:i].strip(), condition[i + len(SEMI_JOIN_OPERATOR) :].strip()
+
+    return None
+
+
+def _is_quoted(value: str) -> bool:
+    """Whether `value` is a quoted literal: both quotes present, matched, and the same kind."""
+    return len(value) >= 2 and ((value[0] == "'" and value[-1] == "'") or (value[0] == '"' and value[-1] == '"'))
 
 
 def _has_wrapping_parenthesis(condition: str) -> bool:

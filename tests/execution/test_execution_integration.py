@@ -149,6 +149,56 @@ def test_string_where_query(sales_test_data: pd.DataFrame):
 
 
 @pytest.mark.timeout(5)
+def test_contains_where_query(sales_test_data: pd.DataFrame):
+    # CONTAINS is case-insensitive, which is what sqlite's LIKE '%x%' already does for ASCII.
+    # Lowercase 'err' against capitalized "Cherry" exercises that on both sides at once.
+    sql = """
+        SELECT cust, prod, year
+        from sales
+        WHERE prod LIKE '%err%'
+        GROUP BY cust, prod, year
+    """
+    esql = """
+        SELECT cust, prod, year
+        WHERE prod CONTAINS 'err'
+    """
+    _test_query(sql, esql, data=sales_test_data)
+
+
+@pytest.mark.timeout(5)
+def test_has_semi_join_where_query(sales_test_data: pd.DataFrame):
+    # HAS is a self semi-join on the key, which SQL spells as an IN over a correlated-free subquery.
+    sql = """
+        SELECT cust, prod, year
+        from sales
+        WHERE state IN (SELECT state from sales WHERE prod = 'Ham')
+        GROUP BY cust, prod, year
+    """
+    esql = """
+        SELECT cust, prod, year
+        WHERE state HAS prod = 'Ham'
+    """
+    _test_query(sql, esql, data=sales_test_data)
+
+
+@pytest.mark.timeout(5)
+def test_has_semi_join_combined_with_a_row_filter(sales_test_data: pd.DataFrame):
+    # The subquery is independent of the outer filter, which is exactly what "the inner condition
+    # reads the unfiltered table" means on the ESQL side.
+    sql = """
+        SELECT cust, prod, year
+        from sales
+        WHERE state IN (SELECT state from sales WHERE prod = 'Ham') AND prod != 'Ham'
+        GROUP BY cust, prod, year
+    """
+    esql = """
+        SELECT cust, prod, year
+        WHERE state HAS prod = 'Ham' AND prod != 'Ham'
+    """
+    _test_query(sql, esql, data=sales_test_data)
+
+
+@pytest.mark.timeout(5)
 def test_mf_query(sales_test_data: pd.DataFrame):
     sql = """
         WITH groups AS (

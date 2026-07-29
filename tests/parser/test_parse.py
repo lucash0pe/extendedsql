@@ -132,7 +132,10 @@ def test_get_parsed_query_returns_expected_structure_with_missing_parts(sales_te
             aggregates=AggregatesDict(global_scope=[], group_specific=[]),
             select_items_in_order=["cust", "prod"],
         ),
-        over=None,
+        # No OVER clause parses to no groups. Empty list rather than None, so the `group not in
+        # groups` check in _parse_aggregate rejects `g1.quant.sum` with a ParsingError instead of
+        # failing the membership test against None (see test_validate.py).
+        over=[],
         where=None,
         such_that=None,
         having=None,

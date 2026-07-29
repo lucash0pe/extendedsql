@@ -1,12 +1,17 @@
+
 # ExtendedSQL Syntax
 
 This document contains information about writing ESQL queries. I will be providing examples as if I was writing a queries for the 'sales' table. The sales table can be found [here](/public/data/sales.csv) or at `/public/data/sales.csv`.
+
+This document is prose. The token sets it describes — the six keywords, the five aggregate functions, the comparison operators, and the semi-join predicate — are defined once in [`src/esql/parser/util.py`](../../src/esql/parser/util.py) as `KEYWORDS`, `AGGREGATE_FUNCTIONS`, `CONDITIONAL_OPERATORS` and `SEMI_JOIN_OPERATOR`, re-exported from `esql`. Read those if you need the authoritative list.
 
 ## Table of Contents
 - [Structure](#structure)
 - [SELECT](#select)
 - [OVER](#over)
 - [WHERE](#where)
+  - [CONTAINS](#contains)
+  - [HAS](#has)
 - [SUCH THAT](#such-that)
 - [HAVING](#having)
 - [ORDER BY](#order-by)
@@ -29,7 +34,7 @@ ORDER BY [variable order]
 
 The query language has 6 keywords: SELECT, OVER, WHERE, SUCH THAT, HAVING, and ORDER BY. The follpowing sections explore the the syntax and use cases of each keyword. ESQL queries do not contain a FROM clause like in SQL since a datatable must be passed in through the DataFrame accessor or through the API. Queries do not require all of the keywords, but variable projection (in the [SELECT](#select) clause) must be performed for the query to produce an output.
 
-ESQL is not case sensitive, including the keywords. Only string comparison in the WHERE and SUCH THAT clauses are case sensitive. 
+ESQL is not case sensitive, including the keywords. Only string comparison in the WHERE and SUCH THAT clauses are case sensitive. The exception is [`CONTAINS`](#where), which is deliberately case insensitive. 
 
 
 ## SELECT
@@ -62,25 +67,68 @@ The following would also be a valid OVER clause:
 
 The WHERE clause determines which rows will be filtered out of the inputted datatable before computing any aggregates. The resulting table will be used to compute any global aggregates.
 
-WHERE clause conditions can include any column in the inputted datatable followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing. 
+WHERE clause conditions can include any column in the inputted datatable followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`, `CONTAINS`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing. 
 
 Conditions can be combined with `AND` and `OR`. The `NOT` operator can also be used for negation. 
 
 Conditions can handle `()` for order of operations, and they interpret `==` as `=`. A boolean column (like `credit` in the `sales` table) can also be a stand alone condition since it will implictly convert to a boolean.
 
+A WHERE condition can also be a [`HAS`](#has) semi-join, which filters on what a row's *group* contains rather than on the row itself.
+
 Below is an example of a valid WHERE clause:
 
 `WHERE NOT (quant >= 500 AND state = 'CT') OR credit`
+
+### CONTAINS
+
+`CONTAINS` keeps rows whose text column contains the given substring anywhere in it, so a filter is not limited to exact equality:
+
+`WHERE prod CONTAINS 'err'`
+
+Three rules apply to it and not to the other operators:
+
+- **It is case insensitive.** `'err'`, `'ERR'` and `'Err'` all match `Cherry`. This is the same behavior as SQL's `LIKE '%err%'`.
+- **Both sides must be text.** The column has to be a text column and the value has to be quoted. `quant CONTAINS '5'` is a parsing error, not a match against the digits of a number.
+- **It is not available in HAVING**, which compares aggregates, and every aggregate is numeric.
+
+It works in [SUCH THAT](#such-that) exactly as it does here, prepended by a group name:
+
+`SELECT venue, g1.quant.sum OVER g1 SUCH THAT g1.prod CONTAINS 'err'`
+
+### HAS
+
+`HAS` keeps rows whose *group* contains a row matching a condition. It is written `<key> HAS <condition>` and reads as "this row's `key` value belongs to some row satisfying `condition`":
+
+`WHERE state HAS prod = 'Ham'`
+
+That keeps every row from every state that ever sold Ham, not just the Ham rows. It is the same thing SQL writes as a subquery, without needing one:
+
+```sql
+WHERE state IN (SELECT state FROM sales WHERE prod = 'Ham')
+```
+
+This is how a query reaches across two grains of the same table. If a table is one row per song and a "show" is really the derived grain `date`, then `date HAS song = 'Dark Star'` selects every song played at any show that also played Dark Star, without a `shows` table and without a join.
+
+Four rules to know:
+
+- **The condition after `HAS` is a whole condition, not a value.** That is what separates `HAS` from the operators above it. Anything valid in a WHERE condition works there, including [`CONTAINS`](#contains) and another `HAS`.
+- **It reads the unfiltered table.** The rest of the WHERE clause does not narrow what the condition after `HAS` can see, because that clause is what `HAS` is helping to filter. So `WHERE state HAS prod = 'Ham' AND prod != 'Ham'` means "everything except Ham, in the states that sold Ham" rather than an empty result.
+- **`AND` and `OR` bind looser than `HAS`.** `a HAS b = 1 AND c = 2` reads as `(a HAS b = 1) AND (c = 2)`. Parenthesize to pull a compound condition inside instead: `a HAS (b = 1 AND c = 2)`.
+- **It is a row filter, so it belongs only in WHERE.** [SUCH THAT](#such-that) and [HAVING](#having) run after rows are grouped and reject it.
+
+`HAS` has no case sensitivity of its own. It is a quantifier, not a comparison, so the condition inside it behaves exactly as it would on its own: `date HAS song = 'Dark Star'` is case sensitive because `=` is, and `date HAS song CONTAINS 'dark'` is case insensitive because `CONTAINS` is. Matching on the key itself is case sensitive, the same as grouping.
 
 
 ## SUCH THAT
 The SUCH THAT clause determines which of the remaining rows will be used to compute aggregates within a group. The SUCH THAT clause should contain a section for each defined group in the [OVER](#over) clause. These sections must be divided by commas, must contain only one group, and must not contain a group that is already defined in another section of the SUCH THAT clause.
 
-SUCH THAT clause conditions can include any column in the inputted datatable but every column name must start with the group name of the section combined using dot notation (e.g. `group1.month`). The group and column is followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing.
+SUCH THAT clause conditions can include any column in the inputted datatable but every column name must start with the group name of the section combined using dot notation (e.g. `group1.month`). The group and column is followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`, `CONTAINS`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing.
 
 Conditions can be combined with `AND` and `OR`. The `NOT` operator can also be used for negation. 
 
 Conditions can handle `()` for order of operations, and they interpret `==` as `=`. A boolean column (like `credit` in the `sales` table) can also be a stand alone condition since it will implictly convert to a boolean. A boolean column must still be prepended by a valid group.
+
+[`HAS`](#has) is not valid here. It filters rows before they are grouped, so it belongs in [WHERE](#where).
 
 For example, one section that defines a group to only contain the state 'NJ' or 'NY, assuming group `g1` is defined in the `OVER` clause, would be written as:
 
@@ -102,7 +150,7 @@ The HAVING clause determines which of the grouped rows will be included in the o
 
 Like in the [SELECT](#select) clause, aggregates can come in the form `column.function` or `group.column.function`. The HAVING clause is not limited to the aggregates defined in the SELECT clause. The only limitation is that they must be contain an aggregate function (`sum`, `avg`, `min`, `max`, `count`) and a column that contains numerical data (e.g. `quant` from the `sales` table) unless the aggregate function used is `count`. They can also contain a group defined in the `OVER` clause.
 
-HAVING clause conditions must include an aggregate followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to. The comparison value must be numeric, as all aggregates are computed numeric values. 
+HAVING clause conditions must include an aggregate followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to. The comparison value must be numeric, as all aggregates are computed numeric values. For that reason [`CONTAINS`](#contains) is the one conditional operator HAVING does not accept, and [`HAS`](#has) is rejected too, since it filters rows rather than groups. 
 
 Conditions can be combined with `AND` and `OR`. The `NOT` operator can be used for negation. 
 

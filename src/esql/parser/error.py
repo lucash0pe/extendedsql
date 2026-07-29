@@ -14,9 +14,22 @@ class ParsingErrorType(Enum):
 
 
 class ParsingError(Exception):
-    def __init__(self, error_type: ParsingErrorType, message: str):
+    """A query the parser rejected, with the piece of the query it rejected.
+
+    `token` is the offending fragment — a column name, an aggregate, a whole condition — as it
+    appears in the query being parsed. It is what an editor needs to point at the mistake rather
+    than only naming the clause it fell in.
+
+    It is a token and not a character offset on purpose: the parser runs on a query that
+    `_prepare_query` has lowercased and whitespace-collapsed, so offsets into it do not map back
+    onto what the user typed, while the token still matches (case-insensitively). Errors about
+    the query as a whole carry no token.
+    """
+
+    def __init__(self, error_type: ParsingErrorType, message: str, token: str | None = None):
         self.error_type = error_type
         self.message = message
+        self.token = token.strip() if token else None
         super().__init__(self.message)
 
     def __str__(self):
