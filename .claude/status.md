@@ -204,6 +204,53 @@ clause gaining a rule upstream simply goes unreflected downstream.
 
 H1 shipped; see the settled record. What it leaves open:
 
+- [ ] **H4. `count` should count rows bare, and count *distinct* on a column.** Filed from portfolio
+  2026-07-29, from a visitor reading a result and being wrong about it in the way the syntax invites.
+
+  **What happened.** `SELECT state, city.count` returns 11,963 for CA. That is the row count — CA has
+  11,963 song-performances and **61 distinct cities**. The reader expected 61, which is what the
+  syntax says: under a clause that auto-groups, `city.count` reads as "the cities, counted".
+
+  **The column is doing nothing.** `city.count`, `song.count` and `position.count` all return 11,963
+  for CA; only `duration.count` differs (10,850), and only because it has 3,269 nulls. So the column
+  in `X.count` carries no meaning except its nullness. It is there to satisfy dot-notation, and
+  naming a column that has no bearing on the answer is what makes the result misread.
+
+  **The root cause is that ESQL has no `COUNT(*)`.** SQL can count rows without naming a column;
+  dot-notation cannot, so every row count borrows a column, and auto-grouping turns the borrowed name
+  into an apparent meaning. All 13 curated demo examples borrow `position` this way.
+
+  **The proposal, which is the dataset owner's call and their preference:**
+
+  - `count` — bare, no column: the row count. The `COUNT(*)` that is missing today.
+  - `column.count` — the **distinct** values of that column. What the syntax already looks like.
+  - `sum` / `avg` / `min` / `max` — unchanged, over rows.
+
+  Two objections were raised from portfolio and both were overruled, correctly. That old queries
+  change meaning does not matter: every query that exists is in the demo and gets rewritten. That
+  `sum / count` would stop equalling `avg` is a SQL identity, not a law — if `count` is defined as
+  distinct then the identity simply does not hold, and `avg` keeps its own definition.
+
+  What makes it worth the migration is that it removes the misleading form rather than documenting
+  it: after this, there is no way to spell "row count" that names an irrelevant column.
+
+  **Two things to decide, both affecting what portfolio can read:**
+
+  1. **`aggregates.forms` grows a bare form.** It currently publishes
+     `["column.function", "group.column.function"]`. A bare `count` is a third shape, and if a group
+     can take one (`g1.count`, the group's row count — expected for symmetry with `g1.column.count`)
+     a fourth. Portfolio's result table decides what is a *measure* by looking for a dot with an
+     aggregate name after it, so a bare `count` column would be filed as a **dimension** and rendered
+     in the label block instead of as a number. That is fixed by reading `forms` instead of assuming
+     a dot, which portfolio is doing now — but only works if `forms` actually carries the new shape.
+  2. **`aggregates.any_dtype` narrows.** "Only `count` is legal on a non-numeric column" would govern
+     only `column.count`, since the bare form takes no column at all.
+
+  **Sequencing: land it with D1** (splitting `position` into set position and show position). Both
+  rewrite all 13 curated examples, the walkthrough, `songs.structure.json` and every SQL equivalent
+  the docs show side by side. Doing them separately means paying that twice, and `esql-smoke` catches
+  a partial migration either way.
+
 - [ ] **H3. `ORDER BY` cannot sort by an aggregate.** Filed from portfolio 2026-07-29.
   `SELECT song, position.count ORDER BY position.count` raises `[ORDER_BY_CLAUSE] Invalid value`, and
   `ORDER BY 2` raises "out of range of the 1 grouping attributes" — confirming the index counts only
