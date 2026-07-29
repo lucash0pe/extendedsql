@@ -128,8 +128,25 @@ parser runs on a lowercased, whitespace-collapsed copy of the query, so offsets 
 back onto what was typed; match it case-insensitively.
 
 The token sets the parser accepts are exported for the same reason: `esql.KEYWORDS`,
-`esql.AGGREGATE_FUNCTIONS` and `esql.CONDITIONAL_OPERATORS`. Anything that documents or completes
-ESQL should read those rather than keep its own copy.
+`esql.AGGREGATE_FUNCTIONS`, `esql.CONDITIONAL_OPERATORS` and `esql.SEMI_JOIN_OPERATOR`. Anything
+that documents or completes ESQL should read those rather than keep its own copy.
+
+Token sets alone do not say where a token is legal, so `esql.GRAMMAR` carries the per-clause
+shapes: what each clause accepts, which operators it takes, what it requires to be present, and
+whether it repeats. It is plain dicts and lists, so `json.dumps(esql.GRAMMAR)` is the whole export
+step for a consumer that renders a completion menu or a reference table.
+
+```python
+import esql
+
+esql.GRAMMAR["clauses"]["HAVING"]["operators"]   # ['>=', '<=', '!=', '==', '>', '<', '=']
+esql.GRAMMAR["clauses"]["SUCH THAT"]["requires"] # ['OVER']
+esql.GRAMMAR["aggregates"]["numeric_only"]       # ['sum', 'avg', 'min', 'max']
+```
+
+`GRAMMAR` is a description rather than the parser itself, so `tests/parser/test_grammar.py` checks
+every claim it makes by running the parser: each listed operator must parse in that clause and each
+unlisted one must raise. A rule added to the parser without updating the description fails there.
 
 ## ESQL Input Data and Query Syntax
 

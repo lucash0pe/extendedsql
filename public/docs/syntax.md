@@ -5,6 +5,8 @@ This document contains information about writing ESQL queries. I will be providi
 
 This document is prose. The token sets it describes — the six keywords, the five aggregate functions, the comparison operators, and the semi-join predicate — are defined once in [`src/esql/parser/util.py`](../../src/esql/parser/util.py) as `KEYWORDS`, `AGGREGATE_FUNCTIONS`, `CONDITIONAL_OPERATORS` and `SEMI_JOIN_OPERATOR`, re-exported from `esql`. Read those if you need the authoritative list.
 
+The per-clause rules this document explains in prose are also available machine-readable as `esql.GRAMMAR` (see [`src/esql/grammar.py`](../../src/esql/grammar.py)): which slot kinds each clause accepts, which operators are legal in it, and what it requires. Anything generating a completion menu or a reference table should read that rather than re-deriving it from this page.
+
 ## Table of Contents
 - [Structure](#structure)
 - [SELECT](#select)

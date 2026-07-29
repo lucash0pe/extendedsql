@@ -38,21 +38,35 @@ from esql.parser.types import (
 # The six clause keywords, in the order a query must write them.
 KEYWORDS = ("SELECT", "OVER", "WHERE", "SUCH THAT", "HAVING", "ORDER BY")
 
-# The aggregate functions valid in `column.function` / `group.column.function`. All require a
-# numeric column except `count`, which accepts any dtype.
+# The aggregate functions valid in `column.function` / `group.column.function`.
 AGGREGATE_FUNCTIONS = ("sum", "avg", "min", "max", "count")
 
-# Comparison operators valid in WHERE, SUCH THAT and HAVING conditions. `==` is read as `=`.
-# `CONTAINS` is a case-insensitive substring test over a text column and is the one operator here
-# that is a word rather than a symbol, so it matches only on word boundaries and only in WHERE and
-# SUCH THAT: a HAVING condition compares an aggregate, which is always numeric.
+# `count` asks how many rows, not what they hold, so it is the one function that works on any
+# dtype. `_parse_aggregate` reads this rather than naming `count` itself.
+DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS = ("count",)
+NUMERIC_AGGREGATE_FUNCTIONS = tuple(f for f in AGGREGATE_FUNCTIONS if f not in DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS)
+
+# Comparison operators valid in a condition. `==` is read as `=`.
 CONDITIONAL_OPERATORS = ("CONTAINS", ">=", "<=", "!=", "==", ">", "<", "=")
 
-# The semi-join predicate, valid only in WHERE. `<key> HAS <condition>` keeps rows whose `<key>`
-# value belongs to some row satisfying `<condition>`, which is how a query reaches across grains
-# without a join. It is not a comparison and so is not one of CONDITIONAL_OPERATORS: what follows
-# it is a whole condition, not a value.
+# Operators that compare text rather than order it. `CONTAINS` is a case-insensitive substring
+# test and is the one operator here that is a word rather than a symbol, so it matches only on
+# word boundaries.
+TEXT_OPERATORS = ("CONTAINS",)
+
+# The semi-join predicate. `<key> HAS <condition>` keeps rows whose `<key>` value belongs to some
+# row satisfying `<condition>`, which is how a query reaches across grains without a join. It is
+# not a comparison and so is not one of CONDITIONAL_OPERATORS: what follows it is a whole
+# condition, not a value.
 SEMI_JOIN_OPERATOR = "HAS"
+
+# Which operators each clause accepts. WHERE filters raw rows, so it takes everything. SUCH THAT
+# scopes a group and runs over the same rows, so it takes the comparisons but not the semi-join,
+# which filters before grouping. HAVING compares an aggregate, and every aggregate is numeric, so
+# it takes neither the text operators nor the semi-join.
+WHERE_OPERATORS = (*CONDITIONAL_OPERATORS, SEMI_JOIN_OPERATOR)
+SUCH_THAT_OPERATORS = CONDITIONAL_OPERATORS
+HAVING_OPERATORS = tuple(op for op in CONDITIONAL_OPERATORS if op not in TEXT_OPERATORS)
 
 
 ###########################################################################
@@ -520,7 +534,9 @@ def _parse_aggregate(
             raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'", token=aggregate)
         elif func not in AGGREGATE_FUNCTIONS:
             raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'", token=aggregate)
-        elif func != "count" and not (pd.api.types.is_any_real_numeric_dtype(column_dtypes[column])):
+        elif func not in DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS and not (
+            pd.api.types.is_any_real_numeric_dtype(column_dtypes[column])
+        ):
             raise ParsingError(
                 error_type, f"Invalid aggregate. Column is not a numeric type: '{aggregate}'", token=aggregate
             )
@@ -535,7 +551,9 @@ def _parse_aggregate(
             raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'", token=aggregate)
         elif func not in AGGREGATE_FUNCTIONS:
             raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'", token=aggregate)
-        elif func != "count" and not (pd.api.types.is_any_real_numeric_dtype(column_dtypes[column])):
+        elif func not in DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS and not (
+            pd.api.types.is_any_real_numeric_dtype(column_dtypes[column])
+        ):
             raise ParsingError(
                 error_type, f"Invalid aggregate. Column is not a numeric type: '{aggregate}'", token=aggregate
             )

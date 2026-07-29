@@ -18,7 +18,7 @@ format:
 # Advisory: mypy is configured for parity but not yet clean over the dynamic
 # query evaluator (union comparisons, TypedDict key-narrowing). See .claude/status.md.
 typecheck:
-	uv run mypy
+	uv run python -m mypy
 
 build:
 	uv build
