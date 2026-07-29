@@ -31,10 +31,13 @@ def build_grouped_table(
 
     filtered_datatable = datatable
     if parsed_where_clause:
+        resolved_where_clause = _resolve_semi_joins(
+            condition=parsed_where_clause, datatable=datatable, column_indices=column_indices
+        )
         filtered_datatable = [
             datatable_row
             for datatable_row in datatable
-            if _evaluate_condition(condition=parsed_where_clause, row=datatable_row, column_indices=column_indices)
+            if _evaluate_condition(condition=resolved_where_clause, row=datatable_row, column_indices=column_indices)
         ]
 
     grouped_rows = {}
@@ -108,8 +111,62 @@ def _is_missing(value) -> bool:
         return False
 
 
+def _resolve_semi_joins(condition: dict, datatable: list[list], column_indices: dict[str, int]) -> dict:
+    """Replace every HAS node with the concrete set of key values its inner condition matched.
+
+    A semi-join asks about the whole table ("which key values have a row satisfying this"), not
+    about the row in hand, so its answer is computed once here and the per-row pass that follows is
+    an ordinary membership test. The inner condition sees the *unfiltered* table on purpose: the
+    rest of the WHERE clause is what the semi-join is helping to filter, so reading the filtered
+    table would make the two mutually dependent. `WHERE date HAS song = 'Dark Star' AND state =
+    'CT'` therefore means "dates that ever had Dark Star, then the CT rows on those dates".
+
+    Returns a new condition tree; the parsed AST is left alone so it stays reusable.
+    """
+    if "key" in condition:
+        key_index = column_indices.get(condition["key"])
+        if key_index is None:
+            raise RuntimeError(f"Column '{condition['key']}' not found in datatable")
+        inner_condition = _resolve_semi_joins(
+            condition=condition["condition"], datatable=datatable, column_indices=column_indices
+        )
+        # A row with a missing key contributes no key value, mirroring how a missing operand
+        # compares as not-true in _evaluate_actual_vs_expected_value.
+        key_set = {
+            row[key_index]
+            for row in datatable
+            if not _is_missing(row[key_index])
+            and _evaluate_condition(condition=inner_condition, row=row, column_indices=column_indices)
+        }
+        return {"key": condition["key"], "operator": condition["operator"], "key_set": key_set}
+
+    if "conditions" in condition:
+        return {
+            **condition,
+            "conditions": [
+                _resolve_semi_joins(condition=sub_condition, datatable=datatable, column_indices=column_indices)
+                for sub_condition in condition["conditions"]
+            ],
+        }
+
+    if "condition" in condition:
+        return {
+            **condition,
+            "condition": _resolve_semi_joins(
+                condition=condition["condition"], datatable=datatable, column_indices=column_indices
+            ),
+        }
+
+    return condition
+
+
 def _evaluate_condition(condition: dict, row: list, column_indices: dict[str, int]) -> bool:
     operator = condition.get("operator")
+    if "key_set" in condition:
+        key_value = row[column_indices[condition["key"]]]
+        # A missing key belongs to no group, so it drops rather than raising.
+        return not _is_missing(key_value) and key_value in condition["key_set"]
+
     if "column" in condition:
         column = condition.get("column")
         condition_value = condition.get("value")

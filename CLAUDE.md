@@ -67,7 +67,7 @@ controls (Pyodide sandbox, CSP, vendored-wheel and runtime integrity, no-exfil, 
 report/error funnel) are owned and documented in `portfolio/` per §5 of the standard. Do
 not duplicate or re-implement them in this engine.
 
-When adding features (for example the pending `HAS` semi-join or nested / multi-grain
+When adding features (for example the pending EMF support or nested / multi-grain
 aggregation in `.claude/status.md`), preserve this property: parse to typed AST and interpret
 structurally, bind identifiers to allowlists and values as data, never build or evaluate
 code or SQL from query text.

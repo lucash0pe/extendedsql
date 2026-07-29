@@ -23,6 +23,7 @@ from esql.parser.types import (
     ParsedSuchThatClause,
     ParsedSuchThatSection,
     ParsedWhereClause,
+    SemiJoinCondition,
     SimpleCondition,
     SimpleGroupCondition,
 )
@@ -46,6 +47,12 @@ AGGREGATE_FUNCTIONS = ("sum", "avg", "min", "max", "count")
 # that is a word rather than a symbol, so it matches only on word boundaries and only in WHERE and
 # SUCH THAT: a HAVING condition compares an aggregate, which is always numeric.
 CONDITIONAL_OPERATORS = ("CONTAINS", ">=", "<=", "!=", "==", ">", "<", "=")
+
+# The semi-join predicate, valid only in WHERE. `<key> HAS <condition>` keeps rows whose `<key>`
+# value belongs to some row satisfying `<condition>`, which is how a query reaches across grains
+# without a join. It is not a comparison and so is not one of CONDITIONAL_OPERATORS: what follows
+# it is a whole condition, not a value.
+SEMI_JOIN_OPERATOR = "HAS"
 
 
 ###########################################################################
@@ -186,7 +193,35 @@ def _parse_where_clause(where_clause: str, column_dtypes: dict[str, np.dtype]) -
         condition = where_clause[len(LogicalOperator.NOT.value) + 1 :].strip()
         return NotCondition(operator=LogicalOperator.NOT, condition=_parse_where_clause(condition, column_dtypes))
 
+    # After AND/OR, so `a HAS b = 1 AND c = 2` reads as `(a HAS b = 1) AND (c = 2)`. Parenthesize
+    # to pull a compound condition inside the HAS instead.
+    semi_join = _split_on_semi_join(where_clause)
+    if semi_join:
+        return _parse_semi_join_condition(*semi_join, condition=where_clause, column_dtypes=column_dtypes)
+
     return _parse_simple_condition(where_clause, column_dtypes)
+
+
+def _parse_semi_join_condition(
+    key: str, inner: str, condition: str, column_dtypes: dict[str, np.dtype]
+) -> SemiJoinCondition:
+    if not key:
+        raise ParsingError(
+            ParsingErrorType.WHERE_CLAUSE,
+            f"{SEMI_JOIN_OPERATOR} needs a column before it: '{condition}'",
+            token=condition,
+        )
+    if key not in column_dtypes:
+        raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Invalid column: {key}", token=key)
+    if not inner:
+        raise ParsingError(
+            ParsingErrorType.WHERE_CLAUSE,
+            f"{SEMI_JOIN_OPERATOR} needs a condition after it: '{condition}'",
+            token=condition,
+        )
+    return SemiJoinCondition(
+        key=key, operator=SEMI_JOIN_OPERATOR, condition=_parse_where_clause(inner, column_dtypes)
+    )
 
 
 def _parse_simple_condition(condition: str, column_dtypes: dict[str, np.dtype]) -> SimpleCondition:
@@ -316,6 +351,13 @@ def _parse_simple_group_condition(
     condition: str, group: str, column_dtypes: dict[str, np.dtype]
 ) -> SimpleGroupCondition:
     condition = condition.strip()
+    if _split_on_semi_join(condition):
+        raise ParsingError(
+            ParsingErrorType.SUCH_THAT_CLAUSE,
+            f"{SEMI_JOIN_OPERATOR} filters rows before grouping, so it belongs in WHERE, "
+            f"not SUCH THAT: '{condition}'",
+            token=condition,
+        )
     split = _split_condition(condition)
     if not split:
         if condition.startswith(group + "."):
@@ -410,6 +452,12 @@ def _parse_aggregate_condition(
         raise ParsingError(
             ParsingErrorType.HAVING_CLAUSE,
             f"CONTAINS compares text and HAVING compares an aggregate, which is numeric: '{condition}'",
+            token=condition,
+        )
+    if _split_on_semi_join(condition):
+        raise ParsingError(
+            ParsingErrorType.HAVING_CLAUSE,
+            f"{SEMI_JOIN_OPERATOR} filters rows, so it belongs in WHERE, not HAVING: '{condition}'",
             token=condition,
         )
     aggregate: GlobalAggregate | GroupAggregate = _parse_aggregate(
@@ -613,6 +661,35 @@ def _operator_starts_at(condition: str, index: int, operator: str) -> bool:
 
 def _is_word_char(char: str) -> bool:
     return char.isalnum() or char == "_"
+
+
+def _split_on_semi_join(condition: str) -> tuple[str, str] | None:
+    """Split `<key> HAS <inner condition>` on the first top-level HAS, or None if there is none.
+
+    Top level means outside quotes and outside parentheses. A HAS nested inside a parenthesized
+    subexpression belongs to that subexpression and is found when the recursion reaches it, so
+    `a HAS (b HAS c = 1)` splits on the outer one here and the inner one a level down.
+    """
+    in_single = in_double = False
+    depth = 0
+
+    for i, char in enumerate(condition):
+        if char == "'" and not in_double:
+            in_single = not in_single
+        elif char == '"' and not in_single:
+            in_double = not in_double
+        elif not in_single and not in_double:
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+
+        if in_single or in_double or depth:
+            continue
+        if _operator_starts_at(condition, i, SEMI_JOIN_OPERATOR):
+            return condition[:i].strip(), condition[i + len(SEMI_JOIN_OPERATOR) :].strip()
+
+    return None
 
 
 def _is_quoted(value: str) -> bool:

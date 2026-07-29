@@ -48,6 +48,19 @@ class NotCondition(TypedDict):
     condition: "ParsedWhereClause"
 
 
+class SemiJoinCondition(TypedDict):
+    """`<key> HAS <condition>`: keep rows whose `key` value belongs to some row satisfying `condition`.
+
+    Unlike every other condition here this one is not a question about the row in hand, so the
+    execution side resolves it against the whole table before the per-row pass (see
+    `algorithms._resolve_semi_joins`).
+    """
+
+    key: str
+    operator: Literal["HAS"]
+    condition: "ParsedWhereClause"
+
+
 class SimpleGroupCondition(SimpleCondition):
     group: str
 
@@ -86,7 +99,7 @@ class ParsedSelectClause(TypedDict):
     select_items_in_order: list[str]
 
 
-ParsedWhereClause = SimpleCondition | CompoundCondition | NotCondition
+ParsedWhereClause = SimpleCondition | CompoundCondition | NotCondition | SemiJoinCondition
 
 ParsedSuchThatSection = SimpleGroupCondition | CompoundGroupCondition | NotGroupCondition
 ParsedSuchThatClause = list[ParsedSuchThatSection]

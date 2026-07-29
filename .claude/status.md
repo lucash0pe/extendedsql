@@ -168,29 +168,9 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 - [ ] **EMF support (headline feature).** Entry-value conditions like `col = col + 1`.
   `_parse_emf_condition_value` is a TODO stub; the `is_emf` flag is parsed but not executed. Not
   advertised in the docs today, so it is net-new capability, not a fix.
-- [ ] **HAS / semi-join predicate (headline feature, requested for the GD demo).** Renamed from
-  `CONTAINS` on 2026-07-28, because v1.3.0 shipped `CONTAINS` as the row-level substring operator
-  (see H2). A WHERE predicate that keeps rows whose *group* contains a row matching a condition —
-  e.g. `WHERE date HAS song = 'Dark Star'` → all songs from every show that also played Dark Star.
-  Semantics: `WHERE <key> HAS <inner condition>` = keep rows whose `<key>` value appears in
-  the subset satisfying `<inner condition>` (a self semi-join on `<key>`). Bridges the two demo
-  grains (songs ↔ shows) without joins, which ESQL doesn't have. Work: parser grammar + a new
-  execution filter pass + tests + a `public/docs/syntax.md` section, then an example wired into the
-  ESQL demo. This is the "build engine + demo side by side" case: coordinate with `portfolio`
-  (the demo frontend) and `datasets` (the demo data).
-
-  **Case sensitivity, settled 2026-07-28 so it is not re-litigated at build time.** `HAS` is a
-  quantifier, not a comparison, so unlike `CONTAINS` it has no case behavior of its own to choose:
-
-  - The **keyword** is case-insensitive for free, like every keyword, since `_prepare_query`
-    lowercases outside quotes.
-  - The **inner condition** keeps whatever its own operator does. `date HAS song = 'Dark Star'` is
-    case-sensitive because `=` is; `date HAS song CONTAINS 'dark'` is case-insensitive because
-    `CONTAINS` is. `HAS` must not override the operator written inside it, and the insensitive
-    variant is reached by composing the two rather than by a flag.
-  - The **`<key>` match** that decides group membership is case-sensitive, matching how
-    `OVER`/`SUCH THAT` already treat key identity. A `HAS` that grouped differently from every
-    other grouping in the engine would be the worse surprise.
+- [x] **HAS / semi-join predicate (headline feature, requested for the GD demo).** Shipped in
+  v1.4.0; see that entry below. Still open on the demo side: an example wired into the ESQL demo,
+  which needs `portfolio` (the frontend) and its data.
 - [ ] **Nested / multi-grain aggregation (headline feature — the grain-bridging companion to
   HAS).** Aggregate at a declared finer grain, then roll *that* up — an aggregate of an
   aggregate, in one pass, no subqueries (the MFQueries thesis taken a step further). Motivating
@@ -242,6 +222,44 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   pattern is a quoted literal bound as data, compared with Python's `in`, never a compiled regex
   and never code.
 
+## v1.4.0 — the HAS semi-join predicate (2026-07-28)
+
+- [x] **Semi-join predicate.** `WHERE state HAS prod = 'Ham'` keeps rows whose *group* contains a
+  row matching a condition, so a query reaches across two grains of one table without a join.
+  `<key> HAS <condition>` = keep rows whose `<key>` value belongs to some row satisfying
+  `<condition>`. Bumped `1.3.0 → 1.4.0`; the gate is green at **119 tests** (was 100).
+
+  **Not a comparison, so not one of `CONDITIONAL_OPERATORS`.** What follows `HAS` is a whole
+  condition, not a value, so it gets its own exported constant `SEMI_JOIN_OPERATOR` and its own
+  node type `SemiJoinCondition` in the WHERE union. Anything valid in a WHERE condition nests
+  inside it, including `CONTAINS` and another `HAS`.
+
+  **It is the first condition that is not a question about the row in hand**, which drove the
+  execution shape. `_resolve_semi_joins` walks the WHERE tree once before the row loop and replaces
+  each HAS node with the concrete set of key values its inner condition matched; the per-row pass
+  is then an ordinary membership test. It returns a new tree rather than mutating the parsed AST.
+
+  Decisions worth keeping:
+
+  - **The inner condition reads the unfiltered table.** The rest of the WHERE clause is what the
+    semi-join helps filter, so reading the filtered table would make the two mutually dependent.
+    `WHERE state HAS prod = 'Ham' AND prod != 'Ham'` therefore returns the non-Ham rows in
+    Ham-selling states, not nothing. This matches SQL's independent subquery, and
+    `test_has_semi_join_combined_with_a_row_filter` asserts that against sqlite directly.
+  - **`AND`/`OR` bind looser than `HAS`**, so `a HAS b = 1 AND c = 2` is `(a HAS b = 1) AND
+    (c = 2)`. Parens pull a compound condition inside. The alternative would make the common
+    "semi-join, then filter" shape need parens every time.
+  - **WHERE only.** SUCH THAT and HAVING run after grouping and reject it with their own messages
+    rather than a confusing parse failure.
+  - **Case sensitivity is inherited, not chosen** (settled before the build, unchanged by it): the
+    keyword is case-insensitive for free, the inner condition keeps whatever its own operator does,
+    and the key match is case-sensitive like every other grouping in the engine.
+
+  Covered by `tests/execution/test_has.py` (17 tests) plus two sqlite parity tests in
+  `test_execution_integration.py` that check `HAS` against `IN (SELECT ...)` over `sales.csv`.
+  Binding is unchanged from what `CLAUDE.md` commits to: the key set is built from data values and
+  membership-tested, with no code or SQL constructed from query text.
+
 ## 3. Engine-side prep for the ESQL demo
 
 The demo frontend lives in `portfolio/site/esql/` and its data in `portfolio/backend/esql/`
@@ -253,4 +271,5 @@ See Stream F above: the demo frontend is slated to move here.
   `esql.demokit.build_demo` (SQL-validated), out of this repo.
 - [x] Demo execution model decided: **in-browser via Pyodide** (the `esql` wheel), no backend.
 - [x] `from esql import ESQLAccessor` / the `.esql` accessor is the stable entry point the wheel exposes.
-- Next engine ask from the demo: the **HAS semi-join predicate** above (§ headline features).
+- Next engine ask from the demo: **nested / multi-grain aggregation** above (§ headline features).
+  `HAS` shipped in v1.4.0; what remains on the demo side is an example wired into the ESQL editor.
