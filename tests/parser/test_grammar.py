@@ -1,0 +1,159 @@
+"""Assert `esql.GRAMMAR` against the parser it describes.
+
+GRAMMAR is a description, not the implementation, so on its own it is just a second copy of rules
+the parser already enforces, which is the drift this was built to remove. These tests are what
+close that gap: each claim in the description is checked by running the real parser through
+`df.esql.validate(...)` and seeing whether it accepts or rejects.
+
+The operator coverage test is the important one. For every clause it asserts both directions, that
+each listed operator parses and each unlisted one raises, so adding an operator to the grammar
+without teaching a clause about it fails here rather than silently reaching the demo.
+"""
+
+import json
+
+import pandas as pd
+import pytest
+
+from esql.grammar import GRAMMAR
+from esql.parser.error import ParsingError
+from esql.parser.util import (
+    AGGREGATE_FUNCTIONS,
+    CONDITIONAL_OPERATORS,
+    KEYWORDS,
+    SEMI_JOIN_OPERATOR,
+)
+
+ALL_OPERATORS = (*CONDITIONAL_OPERATORS, SEMI_JOIN_OPERATOR)
+
+
+@pytest.fixture
+def data() -> pd.DataFrame:
+    return pd.DataFrame({"cust": ["a", "b"], "prod": ["x", "y"], "quant": [1, 2]})
+
+
+def _condition(operator: str, prefix: str = "") -> str:
+    """A minimal valid condition using `operator`, prefixed for SUCH THAT's group notation."""
+    if operator in GRAMMAR["operators"]["text"]:
+        return f"{prefix}prod {operator} 'x'"
+    if operator == SEMI_JOIN_OPERATOR:
+        return f"{prefix}prod {operator} {prefix}quant > 1"
+    return f"{prefix}quant {operator} 1"
+
+
+def _query_using(clause: str, operator: str) -> str:
+    if clause == "WHERE":
+        return f"SELECT cust, quant.sum WHERE {_condition(operator)}"
+    if clause == "SUCH THAT":
+        return f"SELECT cust, g1.quant.sum OVER g1 SUCH THAT {_condition(operator, prefix='g1.')}"
+    if clause == "HAVING":
+        if operator in GRAMMAR["operators"]["text"]:
+            return f"SELECT cust, quant.sum HAVING quant.sum {operator} 'x'"
+        if operator == SEMI_JOIN_OPERATOR:
+            return f"SELECT cust, quant.sum HAVING quant.sum {operator} prod = 'x'"
+        return f"SELECT cust, quant.sum HAVING quant.sum {operator} 1"
+    raise AssertionError(f"no query template for clause {clause}")
+
+
+###############################################################################
+# Shape
+###############################################################################
+def test_grammar_is_json_serializable():
+    # The whole export step downstream is json.dumps, so a non-serializable value breaks the build.
+    assert json.loads(json.dumps(GRAMMAR)) == GRAMMAR
+
+
+def test_grammar_describes_exactly_the_real_clauses():
+    assert GRAMMAR["keywords"] == list(KEYWORDS)
+    assert list(GRAMMAR["clauses"]) == list(KEYWORDS)
+
+
+def test_every_accepted_slot_kind_is_defined():
+    for clause, shape in GRAMMAR["clauses"].items():
+        for kind in shape["accepts"]:
+            assert kind in GRAMMAR["slot_kinds"], f"{clause} accepts undefined slot kind {kind!r}"
+
+
+def test_every_described_operator_is_a_real_operator():
+    for clause, shape in GRAMMAR["clauses"].items():
+        for operator in shape["operators"]:
+            assert operator in ALL_OPERATORS, f"{clause} lists unknown operator {operator!r}"
+
+
+def test_aggregate_functions_are_partitioned_by_dtype_rule():
+    described = GRAMMAR["aggregates"]
+    assert described["functions"] == list(AGGREGATE_FUNCTIONS)
+    assert sorted(described["numeric_only"] + described["any_dtype"]) == sorted(AGGREGATE_FUNCTIONS)
+    assert not set(described["numeric_only"]) & set(described["any_dtype"])
+
+
+###############################################################################
+# The description against the parser
+###############################################################################
+@pytest.mark.parametrize("clause", ["WHERE", "SUCH THAT", "HAVING"])
+def test_listed_operators_parse_and_unlisted_ones_raise(clause: str, data: pd.DataFrame):
+    allowed = set(GRAMMAR["clauses"][clause]["operators"])
+    assert allowed, f"{clause} should list operators"
+
+    for operator in ALL_OPERATORS:
+        query = _query_using(clause, operator)
+        if operator in allowed:
+            data.esql.validate(query)  # must not raise
+        else:
+            with pytest.raises(ParsingError):
+                data.esql.validate(query)
+
+
+@pytest.mark.parametrize("function", GRAMMAR["aggregates"]["numeric_only"])
+def test_numeric_only_aggregates_reject_a_text_column(function: str, data: pd.DataFrame):
+    with pytest.raises(ParsingError, match="not a numeric type"):
+        data.esql.validate(f"SELECT cust, prod.{function}")
+
+
+@pytest.mark.parametrize("function", GRAMMAR["aggregates"]["any_dtype"])
+def test_dtype_agnostic_aggregates_accept_a_text_column(function: str, data: pd.DataFrame):
+    data.esql.validate(f"SELECT cust, prod.{function}")
+
+
+@pytest.mark.parametrize("form", GRAMMAR["aggregates"]["forms"])
+def test_both_aggregate_forms_parse(form: str, data: pd.DataFrame):
+    aggregate = form.replace("group", "g1").replace("column", "quant").replace("function", "sum")
+    over = " OVER g1" if "g1." in aggregate else ""
+    data.esql.validate(f"SELECT cust, {aggregate}{over}")
+
+
+def test_such_that_requires_over_as_described(data: pd.DataFrame):
+    assert GRAMMAR["clauses"]["SUCH THAT"]["requires"] == ["OVER"]
+    # Without OVER there is no group for the section to scope, so the group reference is rejected.
+    with pytest.raises(ParsingError):
+        data.esql.validate("SELECT cust, g1.quant.sum SUCH THAT g1.prod = 'x'")
+
+
+def test_select_is_the_only_required_clause(data: pd.DataFrame):
+    required = [clause for clause, shape in GRAMMAR["clauses"].items() if shape["required"]]
+    assert required == ["SELECT"]
+    # Every other clause is genuinely omittable: SELECT alone parses.
+    data.esql.validate("SELECT cust, quant.sum")
+
+
+def test_select_needs_a_grouping_attribute_as_described(data: pd.DataFrame):
+    assert "column" in GRAMMAR["clauses"]["SELECT"]["accepts"]
+    with pytest.raises(ParsingError, match="No grouping attributes"):
+        data.esql.validate("SELECT quant.sum")
+
+
+def test_clause_order_follows_the_described_keyword_order(data: pd.DataFrame):
+    # HAVING before WHERE inverts the documented order and must be rejected.
+    assert GRAMMAR["keywords"].index("WHERE") < GRAMMAR["keywords"].index("HAVING")
+    with pytest.raises(ParsingError, match="Unexpected position"):
+        data.esql.validate("SELECT cust, quant.sum HAVING quant.sum > 0 WHERE quant > 0")
+
+
+@pytest.mark.parametrize("clause", ["SELECT", "OVER", "SUCH THAT"])
+def test_comma_separated_clauses_are_described_as_such(clause: str):
+    assert GRAMMAR["clauses"][clause]["separator"] == ","
+
+
+def test_repeating_a_group_across_such_that_sections_is_rejected(data: pd.DataFrame):
+    with pytest.raises(ParsingError, match="Multiple sections"):
+        data.esql.validate("SELECT cust, g1.quant.sum OVER g1 SUCH THAT g1.prod = 'x', g1.quant > 1")
