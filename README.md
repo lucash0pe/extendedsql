@@ -176,7 +176,20 @@ Refer to the [documentation](public/docs/syntax.md) on the ESQL query syntax loc
 
 When writing conditions that include dates, write them in the in `yyyy-mm-dd` format within single or double quotes. 
 
-Strings should also be inside single or double quotes. Keep in mind that escaping characters in python strings may cause problems. It is best to not include data in the datatable that require escape characters to match. If your data contains quotes, it is suggested that you use the opposite quotes to write them (e.g. " ' ' " or ' " " ').
+Strings should also be inside single or double quotes. A value that itself contains a quote can be written two ways. Delimit it with the other kind, which is usually the more readable of the two:
+
+```python
+df.esql.query("""SELECT song WHERE song = "(I'm A) Road Runner" """)
+```
+
+Or double the delimiter to hold it as text, the way SQL does. This is the form that covers a value containing both kinds of quote:
+
+```python
+df.esql.query("""SELECT song WHERE song = '(I''m A) Road Runner'""")
+df.esql.query("""SELECT title WHERE title = 'He said "it''s fine"'""")
+```
+
+A literal that is opened and never closed is rejected rather than guessed at, so a stray quote is a parsing error and not a silently empty result.
 
 
 ## Development

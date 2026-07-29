@@ -9,6 +9,7 @@ The per-clause rules this document explains in prose are also available machine-
 
 ## Table of Contents
 - [Structure](#structure)
+  - [Text values](#text-values)
 - [SELECT](#select)
 - [OVER](#over)
 - [WHERE](#where)
@@ -38,6 +39,33 @@ ORDER BY [variable order]
 The query language has 6 keywords: SELECT, OVER, WHERE, SUCH THAT, HAVING, and ORDER BY. The follpowing sections explore the the syntax and use cases of each keyword. ESQL queries do not contain a FROM clause like in SQL since a datatable must be passed in through the DataFrame accessor or through the API. Queries do not require all of the keywords, but variable projection (in the [SELECT](#select) clause) must be performed for the query to produce an output.
 
 ESQL is not case sensitive, including the keywords. Only string comparison in the WHERE and SUCH THAT clauses are case sensitive. The exception is [`CONTAINS`](#where), which is deliberately case insensitive. 
+
+### Text values
+
+A text value is written between a matched pair of `'` or `"`. Either delimiter holds the other as ordinary text, so a value containing an apostrophe is usually easiest to write in double quotes:
+
+```sh
+WHERE song = "(I'm A) Road Runner"
+```
+
+A delimiter holds *itself* by being written twice, the way SQL escapes a quote. This is the form that covers a value containing both kinds:
+
+```sh
+WHERE song = '(I''m A) Road Runner'
+WHERE title = 'He said "it''s fine"'
+```
+
+Only the delimiter *in use* is doubled. Inside a double-quoted value an apostrophe is already ordinary text, so `"It''s"` is not an escape at all and denotes two apostrophes:
+
+| written | denotes |
+|---|---|
+| `'It''s'` | `It's` |
+| `"It's"` | `It's` |
+| `"It''s"` | `It''s` |
+
+Case and spacing inside a text value are data and are carried through exactly as written, so `'Dark  Star'` looks for two spaces and does not match `Dark Star`. This is also why a keyword inside a value is only a value: `WHERE song = 'order by me'` has no ORDER BY clause.
+
+A literal that is opened and never closed is a parsing error. Nothing is guessed at, because nothing can be: a lone `'` is either a delimiter or a piece of text, and only whoever wrote the query knows which.
 
 
 ## SELECT

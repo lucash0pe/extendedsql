@@ -5,6 +5,7 @@ import pandas as pd
 from esql.parser.types import ParsedQuery
 from esql.parser.util import (
     get_keyword_clauses,
+    literal_spans,
     parse_having_clause,
     parse_order_by_clause,
     parse_over_clause,
@@ -20,27 +21,30 @@ def get_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:
 
 
 def _prepare_query(query: str) -> str:
-    # Find and separate quoted strings.
-    pattern = r'"[^"]*"|\'[^\']*\''
-    quoted_texts = re.findall(pattern, query)
-    parts = re.split(f"({pattern})", query)
+    """Canonicalize a query for parsing: lowercase it and collapse its whitespace, outside string
+    literals only.
 
-    # Lowercase all parts that are not within quotes.
-    processed_parts = []
-    quoted_index = 0
-    for part in parts:
-        if re.match(pattern, part):
-            processed_parts.append(f"QUOTED{quoted_index}")
-            quoted_index += 1
-        else:
-            processed_parts.append(part.lower())
+    Keywords, identifiers and operators are case-insensitive, so folding them here means the rest
+    of the parser only ever sees one spelling. A literal is the opposite: its contents are data, so
+    its case and its internal spacing are carried through exactly as written.
 
-    # Reinsert the quoted texts.
-    query = "".join(processed_parts)
-    for i, qt in enumerate(quoted_texts):
-        query = query.replace(f"QUOTED{i}", qt, 1)
+    Telling the two apart is what `literal_spans` is for, and getting it wrong here is what made a
+    value holding an apostrophe silently match nothing (`.claude/status.md`, J4). The old pass
+    found literals with the regex `'[^']*'`, which closes at the first quote it meets rather than
+    at the one that ends the literal.
+    """
+    prepared = []
+    cursor = 0
+    for start, end in literal_spans(query):
+        prepared.append(_fold(query[cursor:start]))
+        prepared.append(query[start:end])  # verbatim: a literal's case and spacing are data
+        cursor = end
+    prepared.append(_fold(query[cursor:]))
+    return "".join(prepared).strip()
 
-    return " ".join(query.split())
+
+def _fold(text: str) -> str:
+    return re.sub(r"\s+", " ", text.lower())
 
 
 def _build_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:

@@ -21,6 +21,8 @@ from esql.parser.util import (
     HAVING_OPERATORS,
     KEYWORDS,
     NUMERIC_AGGREGATE_FUNCTIONS,
+    QUOTE_CHARACTERS,
+    QUOTE_ESCAPE,
     SEMI_JOIN_OPERATOR,
     SUCH_THAT_OPERATORS,
     TEXT_OPERATORS,
@@ -104,11 +106,29 @@ CLAUSES = {
     },
 }
 
+# How a value is written. Only text needs a rule beyond "write it down": it is delimited, so it
+# needs a way to hold its own delimiter. A host that offers completions has to know this to quote
+# what it inserts, and hand-mirroring it is what J4 cost, so it is published rather than described.
+LITERALS = {
+    "text": {
+        "delimiters": list(QUOTE_CHARACTERS),
+        "escape": QUOTE_ESCAPE,
+        "summary": (
+            "A text value sits between a matched pair of ' or \". Either delimiter holds the other "
+            "as ordinary text, and holds itself by being written twice. Only the delimiter in use "
+            "is doubled: 'It''s' and \"It's\" both denote It's, while \"It''s\" denotes It''s, "
+            "because inside \" an apostrophe is already ordinary text. A literal left unterminated "
+            "is rejected rather than guessed at."
+        ),
+    },
+}
+
 GRAMMAR = {
     # Also the order a query must write them in.
     "keywords": list(KEYWORDS),
     "clauses": CLAUSES,
     "slot_kinds": SLOT_KINDS,
+    "literals": LITERALS,
     "aggregates": {
         "functions": list(AGGREGATE_FUNCTIONS),
         "forms": ["column.function", "group.column.function"],

@@ -11,6 +11,9 @@ class ParsingErrorType(Enum):
 
     CLAUSE_ORDER = "CLAUSE ORDER"
     MISSING_CLAUSE = "MISSING CLAUSE"
+    # Not about a clause: a literal's delimiters are read before the query is split into clauses,
+    # so there is no clause to name yet.
+    STRING_LITERAL = "STRING LITERAL"
 
 
 class ParsingError(Exception):
@@ -21,9 +24,9 @@ class ParsingError(Exception):
     than only naming the clause it fell in.
 
     It is a token and not a character offset on purpose: the parser runs on a query that
-    `_prepare_query` has lowercased and whitespace-collapsed, so offsets into it do not map back
-    onto what the user typed, while the token still matches (case-insensitively). Errors about
-    the query as a whole carry no token.
+    `_prepare_query` has lowercased and whitespace-collapsed outside its string literals, so
+    offsets into it do not map back onto what the user typed, while the token still matches
+    (case-insensitively). Errors about the query as a whole carry no token.
     """
 
     def __init__(self, error_type: ParsingErrorType, message: str, token: str | None = None):

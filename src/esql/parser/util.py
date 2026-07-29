@@ -74,6 +74,14 @@ HAVING_OPERATORS = tuple(op for op in CONDITIONAL_OPERATORS if op not in TEXT_OP
 # value from. See `_parse_entry_value`.
 ENTRY_VALUE_PATTERN = re.compile(r"^(\w+)(?:\s*([+-])\s*(\d+(?:\.\d+)?))?$")
 
+# The delimiters a text value can be written in, and the escape for holding one as data.
+QUOTE_CHARACTERS = ("'", '"')
+QUOTE_ESCAPE = "doubling"
+
+# A date value, inside its quotes. Comparing a date column takes a quoted literal like every other
+# text value does, so the quoting is `_is_quoted`'s question and this describes only the contents.
+DATE_PATTERN = re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$")
+
 
 ###########################################################################
 # Keyword & Clause Extraction
@@ -81,11 +89,15 @@ ENTRY_VALUE_PATTERN = re.compile(r"^(\w+)(?:\s*([+-])\s*(\d+(?:\.\d+)?))?$")
 def get_keyword_clauses(query: str) -> dict[str, str | None]:
     keyword_clauses: dict[str, str | None] = dict.fromkeys(KEYWORDS)
 
-    # Find the location of each keyword in the query.
+    # Find the location of each keyword in the query. Searching the mask rather than the query
+    # keeps a keyword that appears inside a text value from splitting the clause there: without
+    # it, `WHERE song = 'order by me'` cuts an ORDER BY clause out of the middle of the literal.
+    masked = mask_literals(query)
+
     keyword_indices = []
     for keyword in (kw.lower() for kw in keyword_clauses):
         pattern = r"\b" + re.escape(keyword.strip()) + r"\b"
-        matches = list(re.finditer(pattern, query))
+        matches = list(re.finditer(pattern, masked))
         if matches:
             keyword_indices.append(matches[0].start())
         else:
@@ -616,13 +628,12 @@ def _parse_condition_value(
     condition: str,
     error_type=ParsingErrorType.SELECT_CLAUSE or ParsingErrorType.SUCH_THAT_CLAUSE,
 ) -> float | bool | str | date:
-    date_pattern = r"^['\"]\d{4}[-/]\d{1,2}[-/]\d{1,2}['\"]$"
     value = value.strip()
 
     if operator in [">=", "<=", ">", "<"]:
-        if re.match(date_pattern, value) and pd.api.types.is_object_dtype(column_dtype):
+        if _is_quoted_date(value) and pd.api.types.is_object_dtype(column_dtype):
             try:
-                date_str = value[1:-1].replace("/", "-")
+                date_str = _unquote(value).replace("/", "-")
                 return datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
                 raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition) from None
@@ -645,19 +656,19 @@ def _parse_condition_value(
             raise ParsingError(
                 error_type, f"CONTAINS needs a quoted text value in condition: '{condition}'", token=condition
             )
-        return value[1:-1]
+        return _unquote(value)
 
     elif operator in ["=", "==", "!="]:
         if value.lower() in ["true", "false"] and pd.api.types.is_bool_dtype(column_dtype):
             return value.lower() == "true"
-        elif re.match(date_pattern, value) and pd.api.types.is_object_dtype(column_dtype):
+        elif _is_quoted_date(value) and pd.api.types.is_object_dtype(column_dtype):
             try:
-                date_str = value[1:-1].replace("/", "-")
+                date_str = _unquote(value).replace("/", "-")
                 return datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
                 raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition) from None
         elif _is_quoted(value) and pd.api.types.is_string_dtype(column_dtype):
-            return value[1:-1]
+            return _unquote(value)
         elif pd.api.types.is_numeric_dtype(column_dtype):
             try:
                 value = float(value)
@@ -749,23 +760,107 @@ def _dtype_kind(column_dtype: np.dtype) -> str:
 
 
 ###########################################################################
+# String Literal Scanning
+###########################################################################
+# A text value is delimited by a matched pair of ' or ", and holds its own delimiter by doubling
+# it: 'It''s' denotes the four characters It's. Both quote kinds delimit, so "It's" says the same
+# thing without doubling, and doubling is what covers a value needing both kinds.
+#
+# Everything that needs to find structure in a query reads a *mask* rather than tracking quote
+# state itself. `mask_literals` blanks each literal, delimiters and all, to a filler of the same
+# length, so an index into the mask is that same index into the original: a caller finds its
+# operator or keyword or parenthesis in the mask and slices the original. One rule, one home.
+#
+# It used to have seven: four `in_single`/`in_double` scanners, `_is_quoted` reading first and last
+# character, a date pattern spelling its delimiters as `['\"]` independently at each end, and in
+# `_prepare_query` a regex, `'[^']*'`, which is the one that disagreed with the rest. On
+# `song = '(I'm A) Road Runner'` it read `'(I'` as the whole literal, so the rest of the value was
+# treated as unquoted text and lowercased, and the query then matched nothing while raising
+# nothing. `get_keyword_clauses` made the eighth case by having no notion of a literal at all.
+# See `.claude/status.md`, J4.
+
+LITERAL_FILLER = "\x00"
+
+
+def literal_spans(text: str) -> list[tuple[int, int]]:
+    """Where each string literal sits in `text`, as half-open (start, end) with delimiters included.
+
+    Raises when a literal is opened and never closed. That case is genuinely ambiguous rather than
+    merely unusual: a lone `'` could be a delimiter or a datum, and no counting rule tells the two
+    apart (`a = 'He's' AND b = 'x'` and `a = 'He's Gone'` differ only in what the writer meant).
+    Rejecting is the only honest answer, and it beats the alternative this replaced, which was to
+    guess and return a confident empty result.
+    """
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char not in QUOTE_CHARACTERS:
+            index += 1
+            continue
+        end = _end_of_literal(text, index)
+        if end is None:
+            other = next(q for q in QUOTE_CHARACTERS if q != char)
+            raise ParsingError(
+                ParsingErrorType.STRING_LITERAL,
+                f"Unterminated {char} string literal. "
+                f"Write {char}{char} to hold a {char} in the text, or delimit the value with "
+                f"{other} instead.",
+            )
+        spans.append((index, end))
+        index = end
+    return spans
+
+
+def mask_literals(text: str) -> str:
+    """`text` with every string literal blanked to filler, index for index.
+
+    The filler only has to be something no scanner looks for, which is why callers read the mask
+    for structure and never test it for content. `_prepare_query` wants the literals themselves
+    rather than the gaps between them, so it reads `literal_spans` directly: inferring them back
+    out of the mask would mistake a control character in the query for one.
+    """
+    masked = list(text)
+    for start, end in literal_spans(text):
+        masked[start:end] = LITERAL_FILLER * (end - start)
+    return "".join(masked)
+
+
+def _end_of_literal(text: str, start: int) -> int | None:
+    """The index just past the literal opening at `start`, or None when it is never closed."""
+    quote = text[start]
+    index = start + 1
+    while index < len(text):
+        if text[index] != quote:
+            index += 1
+        elif index + 1 < len(text) and text[index + 1] == quote:
+            index += 2  # a doubled delimiter is data, not the end
+        else:
+            return index + 1
+    return None
+
+
+def _unquote(value: str) -> str:
+    """The text a quoted literal denotes: delimiters off, each doubled delimiter collapsed to one."""
+    quote = value[0]
+    return value[1:-1].replace(quote * 2, quote)
+
+
+def _is_quoted_date(value: str) -> bool:
+    """Whether `value` is one string literal holding a date."""
+    return _is_quoted(value) and bool(DATE_PATTERN.match(_unquote(value)))
+
+
+###########################################################################
 # Clause Structure Helper Functions
 ###########################################################################
 def _split_condition(condition: str) -> tuple[str, str, str] | None:
-    in_single = False
-    in_double = False
+    masked = mask_literals(condition)
 
-    for i in range(len(condition)):
-        char = condition[i]
-        if char == "'" and not in_double:
-            in_single = not in_single
-        elif char == '"' and not in_single:
-            in_double = not in_double
-
-        if not in_single and not in_double:
-            for op in sorted(CONDITIONAL_OPERATORS, key=len, reverse=True):
-                if _operator_starts_at(condition, i, op):
-                    return condition[:i].strip(), op, condition[i + len(op) :].strip()
+    for i in range(len(masked)):
+        for op in sorted(CONDITIONAL_OPERATORS, key=len, reverse=True):
+            if _operator_starts_at(masked, i, op):
+                return condition[:i].strip(), op, condition[i + len(op) :].strip()
 
     return None
 
@@ -799,31 +894,30 @@ def _split_on_semi_join(condition: str) -> tuple[str, str] | None:
     subexpression belongs to that subexpression and is found when the recursion reaches it, so
     `a HAS (b HAS c = 1)` splits on the outer one here and the inner one a level down.
     """
-    in_single = in_double = False
+    masked = mask_literals(condition)
     depth = 0
 
-    for i, char in enumerate(condition):
-        if char == "'" and not in_double:
-            in_single = not in_single
-        elif char == '"' and not in_single:
-            in_double = not in_double
-        elif not in_single and not in_double:
-            if char == "(":
-                depth += 1
-            elif char == ")":
-                depth -= 1
+    for i, char in enumerate(masked):
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
 
-        if in_single or in_double or depth:
+        if depth:
             continue
-        if _operator_starts_at(condition, i, SEMI_JOIN_OPERATOR):
+        if _operator_starts_at(masked, i, SEMI_JOIN_OPERATOR):
             return condition[:i].strip(), condition[i + len(SEMI_JOIN_OPERATOR) :].strip()
 
     return None
 
 
 def _is_quoted(value: str) -> bool:
-    """Whether `value` is a quoted literal: both quotes present, matched, and the same kind."""
-    return len(value) >= 2 and ((value[0] == "'" and value[-1] == "'") or (value[0] == '"' and value[-1] == '"'))
+    """Whether `value` is exactly one string literal, delimiters included.
+
+    Exactly one, not "starts and ends with a quote": `'a' 'b'` is two literals and answers False,
+    where reading only the first and last character called it a single literal holding `a' 'b`.
+    """
+    return len(value) >= 2 and value[0] in QUOTE_CHARACTERS and _end_of_literal(value, 0) == len(value)
 
 
 def _has_wrapping_parenthesis(condition: str) -> bool:
@@ -831,68 +925,49 @@ def _has_wrapping_parenthesis(condition: str) -> bool:
     if not (condition.startswith("(") and condition.endswith(")")):
         return False
 
+    masked = mask_literals(condition)
     paren_level = 0
-    in_single_quote = False
-    in_double_quote = False
-    for i, char in enumerate(condition):
-        if char == "'" and not in_double_quote:
-            in_single_quote = not in_single_quote
-        elif char == '"' and not in_single_quote:
-            in_double_quote = not in_double_quote
-
-        if in_single_quote or in_double_quote:
-            continue
-
+    for i, char in enumerate(masked):
         if char == "(":
             paren_level += 1
         elif char == ")":
             paren_level -= 1
 
-        if paren_level == 0 and i < len(condition) - 1:
+        if paren_level == 0 and i < len(masked) - 1:
             return False
 
     return paren_level == 0
 
 
 def _split_by_logical_operator(condition: str, operator: LogicalOperator) -> list[str]:
+    masked = mask_literals(condition)
     parts = []
     current = ""
     paren_level = 0
-    in_single_quote = False
-    in_double_quote = False
     i = 0
 
-    while i < len(condition):
-        char = condition[i]
+    while i < len(masked):
+        char = masked[i]
 
-        # Toggle quote state
-        if char == "'" and not in_double_quote:
-            in_single_quote = not in_single_quote
-        elif char == '"' and not in_single_quote:
-            in_double_quote = not in_double_quote
+        # Track parentheses. Any inside a literal are filler by now, so they do not count.
+        if char == "(":
+            paren_level += 1
+        elif char == ")":
+            paren_level -= 1
 
-        # Track parentheses only when not in quotes
-        if not in_single_quote and not in_double_quote:
-            if char == "(":
-                paren_level += 1
-            elif char == ")":
-                paren_level -= 1
-
-        # Check for the logical operator (e.g., AND, OR) when outside parens and quotes
+        # Check for the logical operator (e.g., AND, OR) when outside parens.
         if (
-            not in_single_quote
-            and not in_double_quote
-            and paren_level == 0
+            paren_level == 0
             and char == " "
-            and i + 1 + len(operator.value) <= len(condition)
-            and condition[i + 1 : i + 1 + len(operator.value)].lower() == operator.value.lower()
-            and (i + 1 + len(operator.value) == len(condition) or condition[i + 1 + len(operator.value)] in (" ", ")"))
+            and i + 1 + len(operator.value) <= len(masked)
+            and masked[i + 1 : i + 1 + len(operator.value)].lower() == operator.value.lower()
+            and (i + 1 + len(operator.value) == len(masked) or masked[i + 1 + len(operator.value)] in (" ", ")"))
         ):
             parts.append(current.strip())
             current = ""
             i += len(operator.value) + 1
         else:
-            current += char
+            current += condition[i]
             i += 1
 
     if current.strip():

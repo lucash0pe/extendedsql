@@ -323,9 +323,9 @@ def test_parse_where_clause_can_handle_valid_dates(column_dtypes: dict[str, np.d
     date_clauses = [
         (">=", "'2020-07-01'", date(2020, 7, 1)),
         ("<=", '"2021/12/07"', date(2021, 12, 7)),
-        (">", "'2020/7-1\"", date(2020, 7, 1)),
+        (">", "'2020/7-1'", date(2020, 7, 1)),
         ("<", "'2012-01/30'", date(2012, 1, 30)),
-        ("!=", "\"2020-7-1'", date(2020, 7, 1)),
+        ("!=", '"2020-7-1"', date(2020, 7, 1)),
         ("=", "'2020-07-01'", date(2020, 7, 1)),
         ("==", '"2020-7-1"', date(2020, 7, 1)),
     ]
@@ -335,6 +335,18 @@ def test_parse_where_clause_can_handle_valid_dates(column_dtypes: dict[str, np.d
             column="date", operator=operator, value=expected_date, is_emf=False
         )
         assert parsedWhereClause == expected
+
+
+def test_parse_where_clause_rejects_a_date_whose_quotes_do_not_match(column_dtypes: dict[str, np.dtype]):
+    """A literal opened with one delimiter and closed with the other is not a literal.
+
+    These two used to parse: the date pattern spelled its quotes as `['\"]` at each end
+    independently, so it accepted a mismatched pair that no other value would have been allowed.
+    """
+    for value in ["'2020/7-1\"", "\"2020-7-1'"]:
+        with pytest.raises(ParsingError) as parsingError:
+            parse_where_clause(where_clause=f"date > {value}", column_dtypes=column_dtypes)
+        assert "Unterminated" in parsingError.value.message
 
 
 def test_parse_where_clause_raises_error_when_date_is_not_wrapped_in_quotes(column_dtypes: dict[str, np.dtype]):

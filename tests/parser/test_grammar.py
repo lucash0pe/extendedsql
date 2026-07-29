@@ -173,3 +173,52 @@ def test_comma_separated_clauses_are_described_as_such(clause: str):
 def test_repeating_a_group_across_such_that_sections_is_rejected(data: pd.DataFrame):
     with pytest.raises(ParsingError, match="Multiple sections"):
         data.esql.validate("SELECT cust, g1.quant.sum OVER g1 SUCH THAT g1.prod = 'x', g1.quant > 1")
+
+
+###############################################################################
+# Text literals
+###############################################################################
+def test_every_described_delimiter_really_delimits(data: pd.DataFrame):
+    for delimiter in GRAMMAR["literals"]["text"]["delimiters"]:
+        data.esql.validate(f"SELECT cust WHERE prod = {delimiter}x{delimiter}")
+
+
+def test_each_delimiter_holds_the_other_as_ordinary_text(data: pd.DataFrame):
+    delimiters = GRAMMAR["literals"]["text"]["delimiters"]
+    for delimiter in delimiters:
+        other = next(d for d in delimiters if d != delimiter)
+        data.esql.validate(f"SELECT cust WHERE prod = {delimiter}x{other}y{delimiter}")
+
+
+def test_the_described_escape_is_the_one_the_parser_implements(data: pd.DataFrame):
+    """`doubling` is the published name; this is what it has to mean."""
+    assert GRAMMAR["literals"]["text"]["escape"] == "doubling"
+    for delimiter in GRAMMAR["literals"]["text"]["delimiters"]:
+        data.esql.validate(f"SELECT cust WHERE prod = {delimiter}x{delimiter * 2}y{delimiter}")
+
+
+def test_an_unterminated_literal_is_rejected_as_described(data: pd.DataFrame):
+    for delimiter in GRAMMAR["literals"]["text"]["delimiters"]:
+        with pytest.raises(ParsingError, match="Unterminated"):
+            data.esql.validate(f"SELECT cust WHERE prod = {delimiter}x")
+
+
+def test_only_the_delimiter_in_use_is_doubled_as_described():
+    """The three forms the `text` summary names, each checked for what it actually denotes.
+
+    Nothing bound this before, and the summary was wrong about the third: it claimed `"It''s"`
+    denoted It's. Inside a double-quoted value an apostrophe is already ordinary text, so a doubled
+    one is two apostrophes. A host implementing from the old wording would have doubled both
+    delimiters and produced values matching nothing, which is the failure J4 had just fixed.
+    """
+    data = pd.DataFrame({"t": ["It's", "It''s"], "n": [1, 2]})
+    denotes = {
+        """SELECT t WHERE t = 'It''s'""": "It's",
+        '''SELECT t WHERE t = "It's"''': "It's",
+        '''SELECT t WHERE t = "It''s"''': "It''s",
+    }
+    for query, expected in denotes.items():
+        assert list(data.esql.query(query)["t"]) == [expected], query
+
+    summary = GRAMMAR["literals"]["text"]["summary"]
+    assert "Only the delimiter in use is doubled" in summary

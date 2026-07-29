@@ -41,9 +41,9 @@ place of rules it used to hand-mirror.
 ## Stream J — publishing the demo asset contract
 
 The counterpart to Stream G. G published what is *legal* (the grammar); this publishes the *shape*
-of what `demokit` writes, and the *data* a host needs to complete a value. Both items below are
-built and green; version bumped `1.6.0 -> 1.7.0`, **not yet committed, tagged or pushed**. The gate
-is green at **207 tests** (was 162).
+of what `demokit` writes, and the *data* a host needs to complete a value. J1 and J2 shipped in
+v1.7.0 (commit `5e6770d`, tagged and pushed) and J4 in v1.8.0. The gate is green at **229 tests**
+(was 162).
 
 - [x] **J1. `dataset.schema.json`.** Shipped as `esql.DATASET_SCHEMA` (`src/esql/dataset_schema.py`):
   the `<id>.json` asset declared as JSON Schema. `build_demo` validates its output dict against it
@@ -91,22 +91,39 @@ is green at **207 tests** (was 162).
 
   Either fix unblocks portfolio. The ratio version is the one worth having.
 
-- [ ] **J4. A quote inside a same-quoted literal parses and then matches nothing.** Found in the
-  browser 2026-07-29. `SELECT song WHERE song = '(I'm A) Road Runner'` **does not raise**: it parses,
-  ends the literal at the apostrophe, and returns **0 rows**. The double-quoted form returns the row.
-  **62 of this dataset's 436 songs carry an apostrophe**, so this is 14% of the values J2 just
-  shipped, and the failure mode is the worst available — a confident empty result with no error to
-  read.
+- [x] **J4. A quote inside a same-quoted literal parses and then matches nothing.** Shipped in
+  v1.8.0; see that entry in the settled record. Both candidate fixes were taken, doubling *and*
+  rejection, because they turned out to be the same change once the quote rule had one home.
 
-  There is no escape syntax in the language today. Two candidate fixes, both this repo's call:
-  doubling (`''`, SQL's answer), or rejecting an unbalanced quote count so it is at least an error.
-  **Rejecting is the floor** — nothing is worse than silently wrong.
+- [x] **J5. `literals.text.summary` states something the parser does not do.** Filed from portfolio
+  2026-07-29 while consuming 1.8.0. The summary says `'It''s'`, `"It's"` and `"It''s"` "all denote
+  It's". The third does not — verified against the 1.8.0 wheel, `"It''s"` denotes **`It''s`**, two
+  apostrophes:
 
-  Portfolio has routed around it for the menu: a pick chooses its quote character by content
-  (`quoteFor`), so an apostrophe value comes out double-quoted. Verified by running all 436 songs
-  through the engine quoted that way — **436/436 return exactly one row**, where the always-single
-  form returned zero for 62. That covers picks; it does **not** cover a visitor typing the apostrophe
-  form by hand, which only this repo can fix.
+  | written | denotes |
+  |---|---|
+  | `'It''s'` | `It's` |
+  | `"It's"` | `It's` |
+  | `"It''s"` | `It''s` |
+
+  The *behaviour* looks right and portfolio built against it: only the active delimiter needs
+  doubling, so inside `"` an apostrophe is ordinary text and `''` is two of them. It is the published
+  claim that is wrong, which is the more dangerous half — a host that implements from `summary`
+  doubles both delimiters and silently produces values that match nothing, the exact failure J4 just
+  fixed. `tests/parser/test_grammar.py` binds every claim `GRAMMAR` makes about *clauses* to the real
+  parser; this one is prose in a `summary` string and nothing binds it.
+
+  Worth considering whether the literal rules deserve the same treatment the clause rules got — the
+  three forms above are three assertions waiting to be written.
+
+  **Fixed before v1.8.0 was pushed**, so no wheel ever carried the wrong wording. The summary now
+  says only the delimiter *in use* is doubled and names `"It''s"` as the case that does not collapse,
+  and `test_only_the_delimiter_in_use_is_doubled_as_described` runs all three forms through the
+  engine and asserts what each denotes. Caught because portfolio consumed the claim rather than the
+  behavior, which is the reading-side check working: the engine's own tests exercised
+  `'x''y'` and `"x""y"`, both correct, and never the mixed form the prose got wrong. The general
+  lesson is the one J5 names, that a `summary` string is prose nothing binds; these three are now
+  bound, the rest are not.
 
 **Portfolio-side follow-up, one line, required.** `DATASET_SCHEMA` is a new name in `esql.__all__`,
 so `backend/esql/build.sh`'s export guard fires on the next wheel: it exits with "esql now exports
@@ -206,6 +223,59 @@ H1 shipped; see the settled record. What it leaves open:
   so the grain-bridging semi-join in the settled record below could not keep that name. Decided
   2026-07-28: it is **`HAS`** (`WHERE date HAS song = 'Dark Star'`). Nothing was built under the old
   name, so this was a rename in the design notes only, done here and in `CLAUDE.md`.
+
+---
+
+## Stream K — parser correctness
+
+Opened 2026-07-29. Findings from the v1.8.0 work that are **not** about a missing feature: the
+parser accepts a query and answers it wrongly, or refuses one it should take. J4 was the first of
+these and is fixed; these two were turned up alongside it and are not.
+
+The shape they share with J4 is worth naming, because it is what to look for next: **a rule the
+parser applies by rewriting the query string before it knows the query's structure.** Lowercasing
+the whole query was the J4 root, and K1 is the other half of the same pass.
+
+- [ ] **K1. A mixed-case DataFrame column cannot be queried at all.** Found while fixing J4, by
+  testing what `_prepare_query` does rather than reading it. Hand the accessor a frame whose columns
+  are `Cust` and `Quant` and **every spelling fails**:
+
+  ```
+  df = pd.DataFrame({"Cust": [...], "Quant": [...]})
+  df.esql.query("SELECT Cust, Quant.sum")   -> [SELECT CLAUSE] Invalid column: 'cust'
+  df.esql.query("SELECT cust, quant.sum")   -> [SELECT CLAUSE] Invalid column: 'cust'
+  df.esql.query("SELECT CUST, QUANT.SUM")   -> [SELECT CLAUSE] Invalid column: 'cust'
+  ```
+
+  The column is unreachable. `_prepare_query` lowercases every identifier, then resolution is a
+  plain `in column_dtypes` against the frame's real, case-carrying keys, so the query can only ever
+  name a column the frame spells in lowercase. What looks like "ESQL is not case sensitive"
+  (`public/docs/syntax.md`) is really "ESQL lowercases your query and hopes your columns match".
+
+  **Not fixed in v1.8.0 on purpose.** The honest fix is to stop folding identifiers in the string
+  and resolve them case-insensitively at lookup, where the structure is known: roughly twelve
+  `column_dtypes` sites routed through one resolver. That is a real change to identifier semantics
+  and deserves its own pass, not a rider on a literal-scanning fix. The error message is also
+  actively misleading, since it reports `'cust'` for a query that said `Cust`.
+
+  Nothing in the repo or the demo hits this today: `sales.csv` and both portfolio datasets are
+  lowercase throughout, which is why it has gone unnoticed. It bites the first person who points the
+  accessor at their own frame, which is the entire published use.
+
+- [ ] **K2. Two default arguments are dead, and read as if they were not.** `_parse_condition_value`
+  and `_parse_aggregate` each default `error_type` to `A or B`:
+
+  ```python
+  error_type=ParsingErrorType.SELECT_CLAUSE or ParsingErrorType.SUCH_THAT_CLAUSE,
+  error_type=ParsingErrorType.SELECT_CLAUSE or ParsingErrorType.HAVING_CLAUSE,
+  ```
+
+  `A or B` is `A` for any truthy `A`, so the second name has never meant anything. **Harmless
+  today**, since every one of the four call sites passes `error_type` explicitly and no default is
+  ever taken. That is exactly why it should go: it is a line that looks like it selects a clause per
+  caller and does not, sitting in the function that reports which clause rejected a value. Delete
+  the defaults and make the parameter required, so a future caller cannot silently inherit
+  `SELECT CLAUSE` for a WHERE failure.
 
 ---
 
@@ -329,7 +399,8 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `public/docs/syntax.md` section + an ESQL demo example. Pairs with HAS: HAS
   *filters* one grain by another; this *measures* across grains. Design captured now; build parked
   until the datasets/rename plumbing lands.
-- [ ] **mypy clean pass.** 156 errors (the count was stale at 143 because `make typecheck` called
+- [ ] **mypy clean pass.** 159 errors (recorded as 156 until v1.8.0 measured it again; the count was
+  stale at 143 before that because `make typecheck` called
   `uv run mypy`, whose console script does not spawn, so the target errored out before reaching
   mypy; fixed in v1.5.0 to `uv run python -m mypy`, the form every other target uses). All from
   the dynamic evaluator: union comparisons
@@ -467,6 +538,89 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   Covered by `tests/execution/test_entry_values.py` (18 tests) plus two in
   `tests/parser/test_grammar.py` binding the new `entry_value` slot kind to parser behavior.
   Verified the suite bites: forcing `_has_entry_value` to return False fails 11 of them.
+
+## v1.8.0 — string literals get one scanner and an escape (2026-07-29)
+
+- [x] **J4, plus two more the same misreading reached.** `SELECT song WHERE song = '(I'm A) Road
+  Runner'` returned 0 rows and raised nothing. It now parses when the quote is doubled or the other
+  delimiter is used, and raises when it is neither. Bumped `1.7.0 -> 1.8.0`; the gate is green at
+  **229 tests** (was 207).
+
+  **The filed mechanism was wrong, which is worth recording because it moved the fix.** J4 said the
+  parse "ends the literal at the apostrophe". It does not: `_split_condition` reads
+  `'(I'm A) Road Runner'` correctly, and so does every other scanner in `util.py`. The damage was in
+  `_prepare_query`, which lowercases a query outside its quoted text and found that text with the
+  regex `'[^']*'`. That regex closes at the *first* quote it meets, so it read `'(I'` as the whole
+  literal and lowercased the rest of the value as if it were keywords. The literal then parsed
+  cleanly, as `(I'm a) road runner`, and matched no row. Case-mangling, not truncation.
+
+  **So the real defect was that the quote rule had seven homes**: four `in_single`/`in_double`
+  scanners, `_is_quoted` reading first and last character, a date pattern spelling its delimiters as
+  `['\"]` independently at each end, and that regex, which was the one that disagreed.
+  `get_keyword_clauses` made an eighth case by having no notion of a literal at all. All of them now
+  read `mask_literals`, which blanks each literal (delimiters included) to a filler of the same length so
+  an index into the mask is that index into the original: a caller finds its operator, keyword or
+  parenthesis in the mask and slices the original. Unifying them is what made "reject" and "double"
+  stop being alternatives: with one scanner, doubling is `_end_of_literal` skipping a doubled pair
+  and `_unquote` collapsing it, and rejection is that same scanner reaching the end still open.
+
+  **Two further silent-wrong bugs fell out of the same root**, both found by testing rather than
+  reading, and both now covered:
+
+  - **A clause keyword inside a literal split the clause there.** `WHERE song = 'order by me'` cut
+    an ORDER BY out of the middle of the value. `get_keyword_clauses` was searching the query rather
+    than the mask.
+  - **Whitespace inside a literal was collapsed with the query's.** `'Dark  Star'` silently became
+    `'Dark Star'`. `_prepare_query` reinserted quoted text *before* its `" ".join(query.split())`.
+
+  Decisions worth keeping:
+
+  - **Doubling applies to both delimiters, and either delimiter still holds the other verbatim.**
+    Only the delimiter *in use* is doubled, so `"It's"` and `'It''s'` denote the same four
+    characters while `"It''s"` denotes two apostrophes, and a value needing
+    both kinds is expressible at all, which is the case no single-delimiter rule reaches.
+  - **An unterminated literal raises rather than being guessed at.** No counting rule recovers the
+    writer's intent here: `a = 'He's' AND b = 'x'` and `a = 'He's Gone'` differ only in what was
+    meant, and pairing first-to-last resolves the second while destroying the first. Rejecting is
+    the only honest reading, and the message names both ways out.
+  - **It gets its own `ParsingErrorType.STRING_LITERAL`.** Delimiters are read before the query is
+    split into clauses, so there is no clause to blame; labelling it `[SELECT CLAUSE]` pointed at
+    the wrong place. This is a new enum value, so a host switching on `error_type` sees a new case.
+  - **A date literal lost its private quote rule.** `date_pattern` spelled its delimiters as
+    `['\"]` at each end independently, so it alone accepted a mismatched pair (`'2020/7-1"`) that no
+    other value could use. It now matches the *unquoted* text and lets `_is_quoted` answer the
+    quoting question. One test asserted the old sloppiness and was inverted.
+  - **`_is_quoted` means "exactly one literal", not "starts and ends with a quote".** `'a' 'b'` used
+    to pass as a single literal holding `a' 'b`.
+  - **`literal_spans` is the primitive and `mask_literals` is built on it.** `_prepare_query` wants
+    the literals themselves rather than the gaps between them, and recovering them from the mask
+    would mean testing for the filler byte, which a control character in the query would satisfy.
+    Covered, since the alternative was a sentinel collision nobody would ever see reported.
+
+  **Published, not just described.** `GRAMMAR["literals"]["text"]` now carries the delimiters, the
+  escape name and a summary, so a host quotes what it inserts by reading the rule rather than
+  mirroring it. That is the Stream G obligation going the right way: hand-mirroring this is exactly
+  what J4 cost. Bound to parser behavior by four tests in `tests/parser/test_grammar.py`; the
+  behavior itself is covered by `tests/execution/test_string_literals.py` (17 tests). Verified both
+  bite: breaking the doubling skip fails 5, and pointing `get_keyword_clauses` back at the raw query
+  fails 1.
+
+  **Prose updated to match**, since both places understated what is now possible: `README.md` said
+  to use the opposite quote and to avoid data needing escapes, and `public/docs/syntax.md` had no
+  account of literals at all. It now has a **Text values** section covering the delimiters, doubling,
+  that case and spacing inside a literal are data, and that an unterminated one is an error. Every
+  example in both was run against the engine rather than written from memory.
+
+  **What this turned up and did not fix** is filed as **Stream K** above: a mixed-case DataFrame
+  column is unreachable in any spelling (K1, the other half of the same `_prepare_query` pass), and
+  two dead `A or B` default arguments (K2).
+
+  **Portfolio-side follow-up, optional.** No export guard fires: `literals` is a new key inside
+  `GRAMMAR` rather than a new name in `esql.__all__`, and no slot kind changed, so `grammar.json`
+  simply grows a key. Portfolio's `quoteFor` (pick a delimiter by content) is still correct and
+  still the better default, since a delimiter swap reads better than a doubled quote. What changes
+  is that it no longer has to be the *only* answer, and a visitor typing the apostrophe form by hand
+  now gets an error telling them what to do instead of a confident empty table.
 
 ## 3. Engine-side prep for the ESQL demo
 
