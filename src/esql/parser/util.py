@@ -10,6 +10,7 @@ from esql.parser.types import (
     CompoundAggregateCondition,
     CompoundCondition,
     CompoundGroupCondition,
+    EntryValue,
     GlobalAggregate,
     GlobalAggregateCondition,
     GroupAggregate,
@@ -67,6 +68,11 @@ SEMI_JOIN_OPERATOR = "HAS"
 WHERE_OPERATORS = (*CONDITIONAL_OPERATORS, SEMI_JOIN_OPERATOR)
 SUCH_THAT_OPERATORS = CONDITIONAL_OPERATORS
 HAVING_OPERATORS = tuple(op for op in CONDITIONAL_OPERATORS if op not in TEXT_OPERATORS)
+
+# An entry value on the right of a comparison: a grouping attribute, optionally offset by a number
+# (`month - 1`). Only SUCH THAT takes one, because only there is there an output row to read the
+# value from. See `_parse_entry_value`.
+ENTRY_VALUE_PATTERN = re.compile(r"^(\w+)(?:\s*([+-])\s*(\d+(?:\.\d+)?))?$")
 
 
 ###########################################################################
@@ -254,23 +260,37 @@ def _parse_simple_condition(condition: str, column_dtypes: dict[str, np.dtype]) 
     if operator and value == "":
         raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Missing value for condition: {condition}", token=condition)
 
-    parsed_value, is_emf = _parse_condition_value(
+    # An entry value reads the grouped row being computed, and WHERE runs before there are any, so
+    # it is rejected here by name rather than falling through to "invalid value".
+    entry_value = _parse_entry_value(value, column_dtypes)
+    if entry_value:
+        raise ParsingError(
+            ParsingErrorType.WHERE_CLAUSE,
+            f"'{entry_value['attribute']}' is a column, and WHERE filters rows before they are "
+            f"grouped, so there is no grouped row to read it from. An entry value belongs in "
+            f"SUCH THAT: '{condition}'",
+            token=condition,
+        )
+
+    parsed_value = _parse_condition_value(
         column_dtype=column_dtypes[column],
         operator=operator,
         value=value,
-        column_dtypes=column_dtypes,
         condition=condition,
         error_type=ParsingErrorType.WHERE_CLAUSE,
     )
 
-    return SimpleCondition(column=column, operator=operator, value=parsed_value, is_emf=is_emf)
+    return SimpleCondition(column=column, operator=operator, value=parsed_value, is_emf=False)
 
 
 ###########################################################################
 # SUCH THAT Clause Parsing
 ###########################################################################
 def parse_such_that_clause(
-    such_that_clause: str | None, groups: list[str], column_dtypes: dict[str, np.dtype]
+    such_that_clause: str | None,
+    groups: list[str],
+    column_dtypes: dict[str, np.dtype],
+    grouping_attributes: list[str],
 ) -> ParsedSuchThatClause | None:
     if such_that_clause is None:
         return None
@@ -278,7 +298,12 @@ def parse_such_that_clause(
     such_that_sections = such_that_clause.split(",")
     for section in such_that_sections:
         parsed_such_that_clause.append(
-            _parse_such_that_section(section=section, groups=groups, column_dtypes=column_dtypes)
+            _parse_such_that_section(
+                section=section,
+                groups=groups,
+                column_dtypes=column_dtypes,
+                grouping_attributes=grouping_attributes,
+            )
         )
     groups_in_parsed_clause = set()
     for section in parsed_such_that_clause:
@@ -301,15 +326,17 @@ def find_group_in_such_that_section(group_condition: ParsedSuchThatSection):
 
 
 def _parse_such_that_section(
-    section: str, groups: list[str], column_dtypes: dict[str, np.dtype]
+    section: str, groups: list[str], column_dtypes: dict[str, np.dtype], grouping_attributes: list[str]
 ) -> ParsedSuchThatSection:
     section = section.strip()
     if _has_wrapping_parenthesis(section):
-        return _parse_such_that_section(section[1:-1].strip(), groups, column_dtypes)
+        return _parse_such_that_section(section[1:-1].strip(), groups, column_dtypes, grouping_attributes)
 
     or_conditions = _split_by_logical_operator(section, LogicalOperator.OR)
     if len(or_conditions) > 1:
-        parsed_or_conditions = [_parse_such_that_section(cond, groups, column_dtypes) for cond in or_conditions]
+        parsed_or_conditions = [
+            _parse_such_that_section(cond, groups, column_dtypes, grouping_attributes) for cond in or_conditions
+        ]
         groups_found = {groupCondition["group"] for groupCondition in parsed_or_conditions if "group" in groupCondition}
         if len(groups_found) != 1:
             raise ParsingError(
@@ -322,7 +349,9 @@ def _parse_such_that_section(
 
     and_conditions = _split_by_logical_operator(section, LogicalOperator.AND)
     if len(and_conditions) > 1:
-        parsed_and_conditions = [_parse_such_that_section(cond, groups, column_dtypes) for cond in and_conditions]
+        parsed_and_conditions = [
+            _parse_such_that_section(cond, groups, column_dtypes, grouping_attributes) for cond in and_conditions
+        ]
         groups_found = {
             groupCondition["group"] for groupCondition in parsed_and_conditions if "group" in groupCondition
         }
@@ -338,7 +367,8 @@ def _parse_such_that_section(
     if section.lower().startswith(LogicalOperator.NOT.value.lower() + " "):
         condition = section[len(LogicalOperator.NOT.value) + 1 :].strip()
         return NotGroupCondition(
-            operator=LogicalOperator.NOT, condition=_parse_such_that_section(condition, groups, column_dtypes)
+            operator=LogicalOperator.NOT,
+            condition=_parse_such_that_section(condition, groups, column_dtypes, grouping_attributes),
         )
 
     group_found = None
@@ -358,11 +388,11 @@ def _parse_such_that_section(
             token=section,
         )
 
-    return _parse_simple_group_condition(section, group_found, column_dtypes)
+    return _parse_simple_group_condition(section, group_found, column_dtypes, grouping_attributes)
 
 
 def _parse_simple_group_condition(
-    condition: str, group: str, column_dtypes: dict[str, np.dtype]
+    condition: str, group: str, column_dtypes: dict[str, np.dtype], grouping_attributes: list[str]
 ) -> SimpleGroupCondition:
     condition = condition.strip()
     if _split_on_semi_join(condition):
@@ -393,16 +423,28 @@ def _parse_simple_group_condition(
             ParsingErrorType.SUCH_THAT_CLAUSE, f"Missing value for condition: {condition}", token=condition
         )
 
-    parsed_value, is_emf = _parse_condition_value(
+    # An entry value makes this an EMF condition: what it compares against is not known until
+    # execution reaches an output row, so parsing stops at the reference and validates it.
+    entry_value = _parse_entry_value(value, column_dtypes)
+    if entry_value:
+        _validate_entry_value(
+            entry_value=entry_value,
+            column=column,
+            grouping_attributes=grouping_attributes,
+            column_dtypes=column_dtypes,
+            condition=condition,
+        )
+        return SimpleGroupCondition(group=group, column=column, operator=operator, value=entry_value, is_emf=True)
+
+    parsed_value = _parse_condition_value(
         column_dtype=column_dtypes[column],
         operator=operator,
         value=value,
-        column_dtypes=column_dtypes,
         condition=condition,
         error_type=ParsingErrorType.SUCH_THAT_CLAUSE,
     )
 
-    return SimpleGroupCondition(group=group, column=column, operator=operator, value=parsed_value, is_emf=is_emf)
+    return SimpleGroupCondition(group=group, column=column, operator=operator, value=parsed_value, is_emf=False)
 
 
 ###########################################################################
@@ -571,25 +613,23 @@ def _parse_condition_value(
     column_dtype: np.dtype,
     operator: str,
     value: str,
-    column_dtypes: dict[str, np.dtype],
     condition: str,
     error_type=ParsingErrorType.SELECT_CLAUSE or ParsingErrorType.SUCH_THAT_CLAUSE,
-) -> tuple[float | bool | str | date, bool]:
+) -> float | bool | str | date:
     date_pattern = r"^['\"]\d{4}[-/]\d{1,2}[-/]\d{1,2}['\"]$"
     value = value.strip()
 
-    # TODO implement EMF parsing here
     if operator in [">=", "<=", ">", "<"]:
         if re.match(date_pattern, value) and pd.api.types.is_object_dtype(column_dtype):
             try:
                 date_str = value[1:-1].replace("/", "-")
-                return datetime.strptime(date_str, "%Y-%m-%d").date(), False
+                return datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
                 raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition) from None
         elif pd.api.types.is_numeric_dtype(column_dtype):
             try:
                 value = float(value)
-                return int(value) if value.is_integer() else value, False
+                return int(value) if value.is_integer() else value
             except Exception:
                 raise ParsingError(error_type, f"Invalid value in condition: '{condition}'", token=condition) from None
         raise ParsingError(
@@ -605,23 +645,23 @@ def _parse_condition_value(
             raise ParsingError(
                 error_type, f"CONTAINS needs a quoted text value in condition: '{condition}'", token=condition
             )
-        return value[1:-1], False
+        return value[1:-1]
 
     elif operator in ["=", "==", "!="]:
         if value.lower() in ["true", "false"] and pd.api.types.is_bool_dtype(column_dtype):
-            return value.lower() == "true", False
+            return value.lower() == "true"
         elif re.match(date_pattern, value) and pd.api.types.is_object_dtype(column_dtype):
             try:
                 date_str = value[1:-1].replace("/", "-")
-                return datetime.strptime(date_str, "%Y-%m-%d").date(), False
+                return datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
                 raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition) from None
         elif _is_quoted(value) and pd.api.types.is_string_dtype(column_dtype):
-            return value[1:-1], False
+            return value[1:-1]
         elif pd.api.types.is_numeric_dtype(column_dtype):
             try:
                 value = float(value)
-                return int(value) if value.is_integer() else value, False
+                return int(value) if value.is_integer() else value
             except Exception:
                 raise ParsingError(error_type, f"Invalid value in condition: '{condition}'", token=condition) from None
         raise ParsingError(
@@ -631,10 +671,81 @@ def _parse_condition_value(
     raise ParsingError(error_type, f"Invalid operator in condition: '{condition}'", token=condition)
 
 
-# TODO: Implement to handle parsing of EMF values
-# Should be able to handle numeric euquations (i.e col = col + 1)
-def _parse_emf_condition_value(value: str):
-    pass
+###########################################################################
+# Entry Value Parsing
+###########################################################################
+def _parse_entry_value(value: str, column_dtypes: dict[str, np.dtype]) -> EntryValue | None:
+    """Read `value` as `<column>` or `<column> ± <number>`, or None when it is not that shape.
+
+    None means "this is a literal, not a column reference", so a caller falls through to the
+    literal parsing below. The column has to exist for the shape to count, which is what keeps a
+    bare word like `true` a literal rather than a dangling reference.
+
+    Whether an entry value is *legal* where it was written is the caller's question, not this
+    one's: WHERE rejects it outright and SUCH THAT checks it with `_validate_entry_value`.
+    """
+    match = ENTRY_VALUE_PATTERN.match(value.strip())
+    if not match:
+        return None
+    attribute, sign, offset = match.groups()
+    if attribute not in column_dtypes:
+        return None
+    if offset is None:
+        return EntryValue(attribute=attribute, delta=0)
+    delta = float(offset)
+    delta = int(delta) if delta.is_integer() else delta
+    return EntryValue(attribute=attribute, delta=-delta if sign == "-" else delta)
+
+
+def _validate_entry_value(
+    entry_value: EntryValue,
+    column: str,
+    grouping_attributes: list[str],
+    column_dtypes: dict[str, np.dtype],
+    condition: str,
+) -> None:
+    """Raise unless `entry_value` names something the output row actually holds and can be compared
+    against `column`."""
+    attribute = entry_value["attribute"]
+    if attribute not in grouping_attributes:
+        raise ParsingError(
+            ParsingErrorType.SUCH_THAT_CLAUSE,
+            f"'{attribute}' is not a SELECT grouping attribute, so a grouped row holds no single "
+            f"value for it: '{condition}'",
+            token=condition,
+        )
+
+    attribute_kind = _dtype_kind(column_dtypes[attribute])
+    column_kind = _dtype_kind(column_dtypes[column])
+    if attribute_kind != column_kind:
+        raise ParsingError(
+            ParsingErrorType.SUCH_THAT_CLAUSE,
+            f"Cannot compare {column_kind} column '{column}' against {attribute_kind} "
+            f"attribute '{attribute}': '{condition}'",
+            token=condition,
+        )
+    if entry_value["delta"] and column_kind != "numeric":
+        raise ParsingError(
+            ParsingErrorType.SUCH_THAT_CLAUSE,
+            f"Only a numeric attribute can be offset, and '{attribute}' is {attribute_kind}: '{condition}'",
+            token=condition,
+        )
+
+
+def _dtype_kind(column_dtype: np.dtype) -> str:
+    """Which family of values a column holds: numeric, bool, date or text.
+
+    The order matters and matches how `_parse_condition_value` discriminates a literal. A bool
+    column reads as numeric if asked the other way round, and a date column is object dtype, which
+    `is_string_dtype` also answers True to, so object is settled before text.
+    """
+    if pd.api.types.is_bool_dtype(column_dtype):
+        return "bool"
+    if pd.api.types.is_any_real_numeric_dtype(column_dtype):
+        return "numeric"
+    if pd.api.types.is_object_dtype(column_dtype):
+        return "date"
+    return "text"
 
 
 ###########################################################################

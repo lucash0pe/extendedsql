@@ -56,7 +56,10 @@ def _build_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:
     parsed_where_clause = parse_where_clause(where_clause=keyword_clauses["WHERE"], column_dtypes=column_dtypes)
 
     parsed_such_that_clauses = parse_such_that_clause(
-        such_that_clause=keyword_clauses["SUCH THAT"], groups=parsed_over_clause, column_dtypes=column_dtypes
+        such_that_clause=keyword_clauses["SUCH THAT"],
+        groups=parsed_over_clause,
+        column_dtypes=column_dtypes,
+        grouping_attributes=parsed_select_clause["grouping_attributes"],
     )
 
     (parsed_having_clause, aggregates) = parse_having_clause(

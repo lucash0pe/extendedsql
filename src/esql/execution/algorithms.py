@@ -70,18 +70,24 @@ def build_grouped_table(
             )
             if not group_such_that_section:
                 continue
-            for datatable_row in filtered_datatable:
-                if _evaluate_condition(
-                    condition=group_such_that_section, row=datatable_row, column_indices=column_indices
-                ):
-                    grouping_attribute_combination = tuple(
-                        datatable_row[column_indices[attribute]] for attribute in grouping_attributes
-                    )
-                    grouped_row = grouped_rows.get(grouping_attribute_combination)
-                    if grouped_row:
-                        for aggregate in group_aggregates:
-                            if aggregate["group"] == group:
-                                grouped_row.update_data_map(aggregate=aggregate, row=datatable_row)
+            section_aggregates = [aggregate for aggregate in group_aggregates if aggregate["group"] == group]
+            if _has_entry_value(group_such_that_section):
+                _accumulate_by_entry_value(
+                    section=group_such_that_section,
+                    aggregates=section_aggregates,
+                    grouped_rows=grouped_rows,
+                    datatable=filtered_datatable,
+                    column_indices=column_indices,
+                )
+            else:
+                _accumulate_by_row(
+                    section=group_such_that_section,
+                    aggregates=section_aggregates,
+                    grouped_rows=grouped_rows,
+                    grouping_attributes=grouping_attributes,
+                    datatable=filtered_datatable,
+                    column_indices=column_indices,
+                )
 
     grouped_table = list(grouped_rows.values())
     for grouped_row in grouped_table:
@@ -94,6 +100,109 @@ def build_grouped_table(
             if _evaluate_having_clause(condition=parsed_having_clause, data_map=grouped_row.data_map)
         ]
     return grouped_table
+
+
+###############################################################################
+# SUCH THAT Accumulation
+###############################################################################
+def _accumulate_by_row(
+    section: dict,
+    aggregates: list,
+    grouped_rows: dict[tuple, GroupedRow],
+    grouping_attributes: list[str],
+    datatable: list[list],
+    column_indices: dict[str, int],
+) -> None:
+    """Feed each row the section matches into the grouped row it belongs to.
+
+    A section that compares against constants asks the same question of every row, so a row can
+    only ever feed its own grouping combination and one pass over the table answers the whole
+    clause.
+    """
+    for datatable_row in datatable:
+        if not _evaluate_condition(condition=section, row=datatable_row, column_indices=column_indices):
+            continue
+        grouping_attribute_combination = tuple(
+            datatable_row[column_indices[attribute]] for attribute in grouping_attributes
+        )
+        grouped_row = grouped_rows.get(grouping_attribute_combination)
+        if not grouped_row:
+            continue
+        for aggregate in aggregates:
+            grouped_row.update_data_map(aggregate=aggregate, row=datatable_row)
+
+
+def _accumulate_by_entry_value(
+    section: dict,
+    aggregates: list,
+    grouped_rows: dict[tuple, GroupedRow],
+    datatable: list[list],
+    column_indices: dict[str, int],
+) -> None:
+    """Feed each row the section matches into the grouped row whose entry values it was matched
+    against.
+
+    An entry value asks a different question of each output row, and the rows that answer it sit in
+    a *different* grouping combination than the row being computed: `prev.month = month - 1` scopes
+    `prev` to last month's rows, which belong to last month's group. The pass above cannot serve
+    that, because it routes a matching row to its own combination. So the grouped row is fixed
+    first, its entry values are bound into the section, and the table is scanned against the result.
+
+    That is one scan per output row rather than one for the clause. It is the cost of the EMF form,
+    which is why a section of constants keeps the cheaper pass.
+    """
+    for grouped_row in grouped_rows.values():
+        bound_section = _bind_entry_values(condition=section, entry_values=grouped_row.data_map)
+        for datatable_row in datatable:
+            if not _evaluate_condition(condition=bound_section, row=datatable_row, column_indices=column_indices):
+                continue
+            for aggregate in aggregates:
+                grouped_row.update_data_map(aggregate=aggregate, row=datatable_row)
+
+
+def _has_entry_value(condition: dict) -> bool:
+    if condition.get("is_emf"):
+        return True
+    if "conditions" in condition:
+        return any(_has_entry_value(sub_condition) for sub_condition in condition["conditions"])
+    if "condition" in condition:
+        return _has_entry_value(condition["condition"])
+    return False
+
+
+def _bind_entry_values(condition: dict, entry_values: dict[str, str | int | bool | date]) -> dict:
+    """Replace every entry value with the literal the grouped row being computed holds for it.
+
+    The same shape as `_resolve_semi_joins`: a condition that is not a question about the row in
+    hand is answered up front, so the per-row pass that follows is an ordinary comparison and
+    `_evaluate_condition` needs to know nothing about entry values. Returns a new condition tree,
+    leaving the parsed AST alone so it stays reusable across the other grouped rows.
+    """
+    if condition.get("is_emf"):
+        entry_value = condition["value"]
+        value = entry_values.get(entry_value["attribute"])
+        # A blank grouping cell has nothing to offset. It stays missing, and a comparison against a
+        # missing operand reads as not-true in _evaluate_actual_vs_expected_value.
+        if entry_value["delta"] and not _is_missing(value):
+            value = value + entry_value["delta"]
+        return {**condition, "value": value, "is_emf": False}
+
+    if "conditions" in condition:
+        return {
+            **condition,
+            "conditions": [
+                _bind_entry_values(condition=sub_condition, entry_values=entry_values)
+                for sub_condition in condition["conditions"]
+            ],
+        }
+
+    if "condition" in condition:
+        return {
+            **condition,
+            "condition": _bind_entry_values(condition=condition["condition"], entry_values=entry_values),
+        }
+
+    return condition
 
 
 ###############################################################################
@@ -168,6 +277,12 @@ def _evaluate_condition(condition: dict, row: list, column_indices: dict[str, in
         return not _is_missing(key_value) and key_value in condition["key_set"]
 
     if "column" in condition:
+        # Only _accumulate_by_entry_value knows which grouped row an entry value should read, so an
+        # unbound one reaching here means the section took the wrong pass. Comparing against the
+        # reference itself would silently match nothing rather than say so.
+        if condition.get("is_emf"):
+            raise RuntimeError(f"Entry value was not bound to a grouped row: '{condition}'")
+
         column = condition.get("column")
         condition_value = condition.get("value")
         column_index = column_indices.get(column)

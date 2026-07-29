@@ -179,9 +179,7 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   subscriptable`). `parse.py` now dedups the merge. Regression tests cover both. *(This bug shipped
   in v1.0.0 and is fixed on `main` for v1.1.)*
 
-- [ ] **EMF support (headline feature).** Entry-value conditions like `col = col + 1`.
-  `_parse_emf_condition_value` is a TODO stub; the `is_emf` flag is parsed but not executed. Not
-  advertised in the docs today, so it is net-new capability, not a fix.
+- [x] **EMF support (headline feature).** Shipped in v1.6.0; see that entry below.
 - [x] **HAS / semi-join predicate (headline feature, requested for the GD demo).** Shipped in
   v1.4.0; see that entry below. Still open on the demo side: an example wired into the ESQL demo,
   which needs `portfolio` (the frontend) and its data.
@@ -291,6 +289,53 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   target errored before mypy ran and the recorded error count (143) was stale for however long that
   was true. Now `uv run python -m mypy`, matching every other target, and the real count is 156. The
   cleanup itself is still open above.
+
+## v1.6.0 — EMF entry values (2026-07-28)
+
+- [x] **Entry values in SUCH THAT.** `SUCH THAT prev.cust = cust and prev.month = month - 1` scopes
+  a group against the output row being computed rather than against a constant, which is the EMF
+  (Extended Multi-Feature) half of the papers. Bumped `1.5.0 → 1.6.0`; the gate is green at
+  **162 tests** (was 142).
+
+  **The stub was the small half.** `_parse_emf_condition_value` had sat as a TODO and the `is_emf`
+  flag had been parsed and ignored since v1.0, which made this look like a parsing job. It was not.
+  The rows that satisfy an entry-value condition for group *G* belong to a **different grouping
+  combination** than *G* (`month - 1` is last month's group), and the such-that pass routed every
+  matching row into its *own* combination. Filling in the parser alone would have returned
+  confidently wrong numbers. Execution now picks between two passes per section:
+  `_accumulate_by_row` for a section of constants, unchanged and one scan for the clause, and
+  `_accumulate_by_entry_value`, which fixes the grouped row first, binds its entry values into the
+  section, then scans. That second one costs a scan per output row, which is why the constant case
+  keeps its own path rather than both folding into the general form.
+
+  **Binding mirrors `_resolve_semi_joins`.** Same shape as HAS in v1.4.0: a condition that is not a
+  question about the row in hand gets answered up front into a new tree, so `_evaluate_condition`
+  learns nothing about entry values and the parsed AST stays reusable across grouped rows. An
+  unbound entry value reaching the evaluator raises rather than silently matching nothing, since
+  arriving there at all means the section took the wrong pass.
+
+  Decisions worth keeping:
+
+  - **The same-group linkage is explicit, not implied.** `prev.cust = cust` has to be written. The
+    constant form gets that restriction for free from the row-routing, and reproducing it here
+    would have made `prev.month = month - 1` alone mean something no syntax could express.
+  - **The reference must be a SELECT grouping attribute**, not any column: a grouped row holds no
+    single value for a column it did not group on. This is also what keeps the identifier-allowlist
+    property in `CLAUDE.md` intact, so the value slot still binds to a closed set.
+  - **Comparisons are checked by value family at parse time** (`_dtype_kind`: numeric, bool, date,
+    text), and only a numeric attribute can carry an offset. Without that check, `g1.quant = cust`
+    would parse and then raise a raw `TypeError` out of the row loop, which in the browser demo
+    reaches the visitor.
+  - **Rejected in WHERE by name.** WHERE runs before grouping, so there is no grouped row to read;
+    it says so rather than falling through to "invalid value". HAVING already rejects a non-numeric
+    comparison value, so it needed nothing.
+  - **`_parse_condition_value` lost its `is_emf` return and its unused `column_dtypes` parameter.**
+    Entry values are recognized in the two condition parsers before literal parsing is reached, so
+    the tuple return had no second case left to carry.
+
+  Covered by `tests/execution/test_entry_values.py` (18 tests) plus two in
+  `tests/parser/test_grammar.py` binding the new `entry_value` slot kind to parser behavior.
+  Verified the suite bites: forcing `_has_entry_value` to return False fails 11 of them.
 
 ## 3. Engine-side prep for the ESQL demo
 

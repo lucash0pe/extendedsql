@@ -55,7 +55,11 @@ Concretely:
   come from fixed lists, group names match a strict `[A-Za-z0-9_]` pattern. An unknown
   identifier raises a `ParsingError`, it is never executed.
 - **Values bind as typed data**, parsed and coerced against the target column's dtype
-  (numeric, bool, date, or quoted string), never as code.
+  (numeric, bool, date, or quoted string), never as code. The one value that is not a
+  literal, a SUCH THAT **entry value** (`prev.month = month - 1`), is no exception: it
+  parses to an `EntryValue` naming a column plus a numeric offset, the column must be one
+  of the SELECT grouping attributes, and execution resolves it by dict lookup against the
+  grouped row. There is no expression evaluator behind it.
 
 **Bounded surface: no I/O.** The engine reads only the **in-memory DataFrame it is handed**.
 It performs no filesystem or network access, opens no data stores, and spawns no
@@ -67,7 +71,7 @@ controls (Pyodide sandbox, CSP, vendored-wheel and runtime integrity, no-exfil, 
 report/error funnel) are owned and documented in `portfolio/` per §5 of the standard. Do
 not duplicate or re-implement them in this engine.
 
-When adding features (for example the pending EMF support or nested / multi-grain
+When adding features (for example the pending nested / multi-grain
 aggregation in `.claude/status.md`), preserve this property: parse to typed AST and interpret
 structurally, bind identifiers to allowlists and values as data, never build or evaluate
 code or SQL from query text.

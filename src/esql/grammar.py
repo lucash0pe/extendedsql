@@ -34,6 +34,12 @@ SLOT_KINDS = {
     "group_name": "A group declared in OVER. Must match [A-Za-z0-9_]+.",
     "condition": "A comparison or semi-join, combinable with AND, OR, NOT and parentheses.",
     "group_condition": "A condition whose every column is prefixed with its group name.",
+    "entry_value": (
+        "In place of a literal on the right of a group condition: a SELECT grouping attribute, "
+        "optionally offset by a number (`month - 1`). It stands for the value the grouped row "
+        "being computed holds for that attribute, so the condition scopes the group per output "
+        "row rather than to a constant."
+    ),
     "aggregate_condition": "An aggregate compared against a number.",
     "grouping_attribute_index": (
         "A 1-based index into the SELECT grouping attributes. Negative reverses the sort."
@@ -72,11 +78,12 @@ CLAUSES = {
         "required": False,
         "requires": ["OVER"],
         "separator": ",",
-        "accepts": ["group_condition"],
+        "accepts": ["group_condition", "entry_value"],
         "operators": list(SUCH_THAT_OPERATORS),
         "summary": (
             "One section per group, each scoping which rows feed that group's aggregates. A group "
-            "may appear in only one section."
+            "may appear in only one section. The only clause that takes an entry value, which is "
+            "what makes a query EMF rather than MF."
         ),
     },
     "HAVING": {

@@ -31,11 +31,30 @@ class LogicalOperator(Enum):
     NOT = "not"
 
 
+class EntryValue(TypedDict):
+    """The value a grouping attribute holds in the output row being computed, offset by `delta`.
+
+    This is what makes a query EMF (Extended Multi-Feature) rather than MF: a SUCH THAT condition
+    written against one of these asks a different question of each output row, so
+    `prev.month = month - 1` scopes group `prev` to the month before whichever month the row in
+    hand is for, rather than to a fixed month. `delta` is 0 for a bare reference like
+    `prev.cust = cust`.
+
+    The rows that satisfy such a condition belong to a *different* grouping combination than the
+    row being computed, which is why execution binds this to a literal per output row
+    (`algorithms._bind_entry_values`) rather than evaluating it against the row in hand. Nothing
+    downstream of that binding sees this shape.
+    """
+
+    attribute: str
+    delta: float
+
+
 class SimpleCondition(TypedDict):
     column: str
     operator: str
-    value: float | bool | str | date
-    is_emf: bool  # EMF is when the comparison value is based on the entry value of the column.
+    value: float | bool | str | date | EntryValue
+    is_emf: bool  # Whether `value` is an EntryValue rather than a literal.
 
 
 class CompoundCondition(TypedDict):

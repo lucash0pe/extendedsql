@@ -395,6 +395,7 @@ def test_parse_such_that_section_returns_expected_structure_with_logical_operato
         section="1.cust = 'Sam' or not (1.year = 2020 and not 1.credit)",
         groups=["1", "2", "3"],
         column_dtypes=column_dtypes,
+        grouping_attributes=["cust"],
     )
     expected: ParsedSuchThatSection = CompoundGroupCondition(
         operator=LogicalOperator.OR,
@@ -422,7 +423,12 @@ def test_parse_such_that_section_returns_expected_structure_with_logical_operato
 
 def test_parse_such_that_section_raises_error_for_multiple_groups_in_a_clause(column_dtypes: dict[str, np.dtype]):
     with pytest.raises(ParsingError) as parsingError:
-        _parse_such_that_section(section="1.year = 2020 and 2.credit", groups=["1", "2"], column_dtypes=column_dtypes)
+        _parse_such_that_section(
+            section="1.year = 2020 and 2.credit",
+            groups=["1", "2"],
+            column_dtypes=column_dtypes,
+            grouping_attributes=["cust"],
+        )
     assert (
         parsingError.value.error_type == ParsingErrorType.SUCH_THAT_CLAUSE
         and "Multiple groups" in parsingError.value.message
@@ -431,7 +437,12 @@ def test_parse_such_that_section_raises_error_for_multiple_groups_in_a_clause(co
 
 def test_parse_such_that_section_raises_error_for_invalid_group(column_dtypes: dict[str, np.dtype]):
     with pytest.raises(ParsingError) as parsingError:
-        _parse_such_that_section(section="2.year = 2020 and 2.credit", groups=["1"], column_dtypes=column_dtypes)
+        _parse_such_that_section(
+            section="2.year = 2020 and 2.credit",
+            groups=["1"],
+            column_dtypes=column_dtypes,
+            grouping_attributes=["cust"],
+        )
     assert (
         parsingError.value.error_type == ParsingErrorType.SUCH_THAT_CLAUSE
         and "No valid group" in parsingError.value.message
@@ -443,6 +454,7 @@ def test_parse_such_that_clause_returns_expected_list(column_dtypes: dict[str, n
         such_that_clause="1.cust = 'Sam', 2.quant > 6 or 2.quant <= 500, 3.credit == true",
         groups=["1", "2", "3"],
         column_dtypes=column_dtypes,
+        grouping_attributes=["cust"],
     )
     expected: ParsedSuchThatClause = [
         SimpleCondition(group="1", column="cust", operator="=", value="Sam", is_emf=False),
@@ -468,7 +480,12 @@ def test_parse_such_that_clause_raises_error_for_multiple_sections_with_the_same
     ]
     for clause in clauses:
         with pytest.raises(ParsingError) as parsingError:
-            parse_such_that_clause(such_that_clause=clause, groups=["1", "2", "3"], column_dtypes=column_dtypes)
+            parse_such_that_clause(
+                such_that_clause=clause,
+                groups=["1", "2", "3"],
+                column_dtypes=column_dtypes,
+                grouping_attributes=["cust"],
+            )
         assert (
             parsingError.value.error_type == ParsingErrorType.SUCH_THAT_CLAUSE
             and "Multiple sections contain group" in parsingError.value.message

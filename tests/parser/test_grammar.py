@@ -129,6 +129,22 @@ def test_such_that_requires_over_as_described(data: pd.DataFrame):
         data.esql.validate("SELECT cust, g1.quant.sum SUCH THAT g1.prod = 'x'")
 
 
+def test_only_such_that_accepts_an_entry_value_as_described(data: pd.DataFrame):
+    accepting = [clause for clause, shape in GRAMMAR["clauses"].items() if "entry_value" in shape["accepts"]]
+    assert accepting == ["SUCH THAT"]
+    data.esql.validate("SELECT cust, quant, g1.quant.sum OVER g1 SUCH THAT g1.quant = quant - 1")
+    # Everywhere else the same reference is a column with no grouped row to read it from.
+    with pytest.raises(ParsingError):
+        data.esql.validate("SELECT cust, quant, quant.sum WHERE quant = quant - 1")
+
+
+def test_an_entry_value_must_be_a_grouping_attribute_as_described(data: pd.DataFrame):
+    assert "grouping attribute" in GRAMMAR["slot_kinds"]["entry_value"]
+    # `quant` is projected but not grouped on, so a grouped row holds no single value for it.
+    with pytest.raises(ParsingError, match="not a SELECT grouping attribute"):
+        data.esql.validate("SELECT cust, g1.quant.sum OVER g1 SUCH THAT g1.quant = quant - 1")
+
+
 def test_select_is_the_only_required_clause(data: pd.DataFrame):
     required = [clause for clause, shape in GRAMMAR["clauses"].items() if shape["required"]]
     assert required == ["SELECT"]

@@ -15,6 +15,7 @@ The per-clause rules this document explains in prose are also available machine-
   - [CONTAINS](#contains)
   - [HAS](#has)
 - [SUCH THAT](#such-that)
+  - [Entry values](#entry-values)
 - [HAVING](#having)
 - [ORDER BY](#order-by)
 
@@ -144,6 +145,42 @@ SUCH THAT q1.month = 1 or q1.month = 2 or q1.month = 3,
           q3.month = 7 or q3.month = 8 or q3.month = 9,
           q4.month = 10 or q4.month = 11 or q4.month = 12
 ```
+
+### Entry values
+
+Every condition above compares against a fixed value, so it asks the same question of every output row. An **entry value** compares against the output row itself: write a grouping attribute where the value would go, and it stands for whatever that row holds for it.
+
+That is what lets a group reach rows the output row does not contain. Written with an offset, it reaches the group beside it:
+
+```
+SELECT cust, month, quant.avg, prev.quant.avg
+OVER prev
+SUCH THAT prev.cust = cust and prev.month = month - 1
+```
+
+Each row shows a customer's average for its month next to that same customer's average for the month before. Group `prev` is scoped to a different month for every row in the result, which no constant can express. This is the difference between an MF query and an **EMF** (Extended Multi-Feature) query in the papers this language is drawn from.
+
+Written without an offset, an entry value reaches every row sharing a value:
+
+```
+SELECT cust, month, quant.sum, all_months.quant.sum
+OVER all_months
+SUCH THAT all_months.cust = cust
+```
+
+Each row shows its own month's total beside the customer's total across all months.
+
+Five rules apply:
+
+- **It must be a grouping attribute**, one of the plain columns in [SELECT](#select). Any other column has no single value in a grouped row, so referencing one is a parsing error.
+- **The linkage is not implicit.** A section of constants only ever feeds a group from its own rows, so it stays inside the grouping combination without being asked. An entry value does not, which is why `prev.cust = cust` is written out above. Leave it off and group `prev` reads every customer's previous month, not this customer's.
+- **An offset needs numbers on both sides.** `month - 1` and `month + 1` work on a numeric column. A text or date attribute can be referenced but not offset.
+- **Both sides must be the same kind of value.** A numeric column compares against a numeric attribute, text against text, dates against dates. Mixing them is a parsing error rather than a comparison that quietly matches nothing.
+- **Only SUCH THAT takes one.** [WHERE](#where) runs before rows are grouped, so there is no grouped row to read a value from, and [HAVING](#having) compares aggregates against numbers. Both reject it.
+
+A group that finds no rows leaves its aggregates empty for that output row, the same as any other unmatched group: month 1 above has no month 0, so its `prev.quant.avg` comes back missing.
+
+Quoting turns a reference back into text. `g1.prod = 'cust'` looks for the literal string `cust`, not for the row's customer.
 
 
 ## HAVING
