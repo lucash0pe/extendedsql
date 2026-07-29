@@ -59,11 +59,25 @@ that `count` is the only aggregate legal on a non-numeric column (mirroring `_pa
 `grammar.json`, so the pattern exists. It just does not reach far enough, and the gap is silent: a
 clause gaining a rule upstream simply goes unreflected downstream.
 
-- [ ] **G1. Emit the per-clause shapes** alongside the token sets, generated from the parser rather
-  than restated. The consumer then renders a table instead of maintaining a copy. This is the same
-  "token sets are never restated" doctrine, extended from tokens to clause shapes.
+- [x] **G1. Emit the per-clause shapes.** Shipped in v1.5.0 as `esql.GRAMMAR` (`src/esql/grammar.py`):
+  per clause, what it accepts, which operators it takes, what it requires, whether it repeats, plus
+  a slot-kind glossary and the aggregate dtype rule. Plain dicts and lists, so `json.dumps` is the
+  whole export step.
+
+  **Honest about what "generated from the parser" turned out to mean.** The parser is imperative,
+  not a declarative grammar, so there is nothing to mechanically generate from without restructuring
+  it, which the lean ladder does not justify. What ships instead: the token-set dimension *is* single
+  sourced (`WHERE_OPERATORS` / `SUCH_THAT_OPERATORS` / `HAVING_OPERATORS` and
+  `DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS` are constants the parser reads, and `_parse_aggregate` no
+  longer names `count` itself), and every remaining claim is bound to behavior by
+  `tests/parser/test_grammar.py`, which runs the real parser through `validate()` and asserts each
+  listed operator parses in that clause and each unlisted one raises. Verified the guard bites: making
+  `HAVING_OPERATORS` claim CONTAINS fails the test rather than reaching the demo. That kills the
+  silent-drift failure mode, which was the point, without pretending the description is generated.
+
 - [ ] **G2. A guard for the prose.** The clause reference cards are hand-written and only the keyword
-  list is asserted today.
+  list is asserted today. G1 gives the cards something to be checked against: they can now be
+  generated from `GRAMMAR` or asserted to agree with it.
 
 ---
 
@@ -186,7 +200,10 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `public/docs/syntax.md` section + an ESQL demo example. Pairs with HAS: HAS
   *filters* one grain by another; this *measures* across grains. Design captured now; build parked
   until the datasets/rename plumbing lands.
-- [ ] **mypy clean pass.** 143 errors, all from the dynamic evaluator: union comparisons
+- [ ] **mypy clean pass.** 156 errors (the count was stale at 143 because `make typecheck` called
+  `uv run mypy`, whose console script does not spawn, so the target errored out before reaching
+  mypy; fixed in v1.5.0 to `uv run python -m mypy`, the form every other target uses). All from
+  the dynamic evaluator: union comparisons
   (`[operator]`) and TypedDict key-narrowing (`[typeddict-item]`/`[index]`) mypy can't follow
   through runtime `'group' in aggregate` checks. Options: type the cell/accumulator boundaries as
   `Any` (honest — a `_data_map` slot holds int|float|date or an avg `{'sum','count'}` dict), or
@@ -262,6 +279,17 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `test_execution_integration.py` that check `HAS` against `IN (SELECT ...)` over `sales.csv`.
   Binding is unchanged from what `CLAUDE.md` commits to: the key set is built from data values and
   membership-tested, with no code or SQL constructed from query text.
+
+## v1.5.0 — the grammar export (2026-07-28)
+
+- [x] **`esql.GRAMMAR` (G1)** and **`make typecheck` fixed.** See the G1 entry above for the export
+  and for what "generated from the parser" honestly amounts to. The gate is green at **142 tests**
+  (was 119).
+
+  `make typecheck` had been calling `uv run mypy`, whose console script fails to spawn, so the
+  target errored before mypy ran and the recorded error count (143) was stale for however long that
+  was true. Now `uv run python -m mypy`, matching every other target, and the real count is 156. The
+  cleanup itself is still open above.
 
 ## 3. Engine-side prep for the ESQL demo
 
