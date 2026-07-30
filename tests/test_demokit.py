@@ -14,7 +14,7 @@ import pandas as pd
 import pytest
 
 from esql.dataset_schema import DATASET_SCHEMA, validate_dataset
-from esql.demokit import DISTINCT_VALUE_CAP, _distinct_values, _schema, build_demo
+from esql.demokit import DIMENSION_RATIO, DISTINCT_VALUE_CAP, _distinct_values, _schema, build_demo
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SALES_CSV = REPO_ROOT / "public" / "data" / "sales.csv"
@@ -93,7 +93,7 @@ def test_an_example_whose_sql_disagrees_still_fails_first(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------
-# Capped distinct values -- the value-completion payload.
+# Distinct values -- the value-completion payload, and which columns earn one.
 # --------------------------------------------------------------------------------------------
 
 
@@ -117,21 +117,48 @@ def test_a_discrete_numeric_column_ships_values_sorted_numerically(built):
     assert month["values"] == [str(n) for n in range(1, 13)]
 
 
-def test_a_column_over_the_cap_ships_no_values(built):
-    """`date` holds 1818 distinct values, well past the cap, so it offers no completions at all --
-    which is different from offering none because it has none."""
+def test_a_column_too_distinct_to_be_a_dimension_ships_no_values(built):
+    """`quant` is a measure (1000 distinct over 10,000 rows, 10%) and `date` is near-unique per row
+    (1818, 18%). Both are above `DIMENSION_RATIO`, so neither offers completions at all -- which is
+    different from offering none because it has none."""
     assert "values" not in _column(built["asset"], "date")
     assert "values" not in _column(built["asset"], "quant")
 
 
-def test_a_continuous_column_ships_no_values_even_under_the_cap():
+def test_a_continuous_column_ships_no_values_even_when_discrete_enough():
     series = pd.Series([1.5, 2.5, 1.5], name="duration")
     assert _distinct_values(series, "number") is None
 
 
-def test_the_cap_is_a_ceiling_not_a_truncation():
-    under = pd.Series(range(DISTINCT_VALUE_CAP), dtype="int64")
-    over = pd.Series(range(DISTINCT_VALUE_CAP + 1), dtype="int64")
+def test_a_dimension_ships_its_values_however_many_it_has():
+    """The case the count got wrong: 520 venues over 39,774 rows is 1.3%, plainly a dimension, and
+    was excluded by twenty under `DISTINCT_VALUE_CAP = 500`."""
+    venues = [f"venue {n}" for n in range(520)]
+    series = pd.Series((venues * 77)[:39_774], dtype="string")
+    assert _distinct_values(series, "string") == sorted(venues)
+
+
+def test_a_small_value_set_ships_whatever_its_ratio():
+    """Four states over fifty rows is 8%, over `DIMENSION_RATIO` and still obviously a dimension. A
+    ratio says nothing on a frame this small, so a set this small does not have to pass it."""
+    series = pd.Series((["CT", "NY", "NJ", "PA"] * 13)[:50], dtype="string")
+    assert _distinct_values(series, "string") == ["CT", "NJ", "NY", "PA"]
+    assert DIMENSION_RATIO * 50 < 4
+
+
+def test_the_ratio_excludes_a_column_the_ceiling_would_admit():
+    """1000 distinct over 2000 rows is half the frame: well under the ceiling, and not a dimension."""
+    series = pd.Series(list(range(1000)) * 2, dtype="int64")
+    assert len(series) == 2000 and DISTINCT_VALUE_CAP > 1000
+    assert _distinct_values(series, "number") is None
+
+
+def test_the_ceiling_bounds_the_asset_whatever_the_ratio():
+    """A ratio alone would ship 50,000 values off a million-row frame. The ceiling is a ceiling, not
+    a truncation: over it the column offers nothing rather than an arbitrary prefix."""
+    rows = 200_000
+    under = pd.Series((list(range(DISTINCT_VALUE_CAP)) * 100)[:rows], dtype="int64")
+    over = pd.Series((list(range(DISTINCT_VALUE_CAP + 1)) * 100)[:rows], dtype="int64")
     assert len(_distinct_values(under, "number")) == DISTINCT_VALUE_CAP
     assert _distinct_values(over, "number") is None
 

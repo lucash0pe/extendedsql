@@ -30,12 +30,25 @@ import esql.accessor  # noqa: F401  (registers the .esql accessor)
 from esql.accessor import _enforce_allowed_dtypes
 from esql.dataset_schema import DATASET_SCHEMA, DatasetSchemaError, validate_dataset
 
-# How many distinct values a column may hold and still ship them all. A host offers these as value
-# completions ("WHERE song = '" should suggest real song names), so the cap is about what is useful
-# to scroll and what is reasonable to ship, not about correctness -- above it the column is a poor
-# completion source anyway. Generous on purpose: the Grateful Dead archive's song column is a few
-# hundred titles and is exactly the case this exists for.
-DISTINCT_VALUE_CAP = 500
+# Whether a column ships its distinct values, for a host to offer as completions ("WHERE song = '"
+# should suggest real song names). The question is "does completing this column help?", and the
+# signal for that is the *ratio* of distinct values to rows: a dimension sits far below its row
+# count (the Grateful Dead archive's 520 venues over 39,774 rows, 1.3%) while a measure or a
+# free-text column climbs toward 100% and is useless to complete at any cardinality.
+#
+# A count alone did both jobs badly. At 500 it excluded that venue column by twenty, losing exactly
+# the values a visitor most needs help spelling, and raising the count until venue fit would have
+# started shipping `quant` (1,000 distinct over 10,000 rows), a measure nobody completes.
+DIMENSION_RATIO = 0.05
+
+# Below this, a column ships regardless of ratio. A ratio is meaningless on a small frame -- four
+# states over fifty rows is 8%, plainly a dimension -- and any set this small is worth scrolling.
+SMALL_VALUE_SET = 50
+
+# The absolute ceiling, for asset size rather than usefulness: 5% of a million-row frame would pass
+# the ratio test with 50,000 values and megabytes of JSON. 436 songs cost ~35 KB of a 60 KB asset,
+# so this is generous while the assets stay small.
+DISTINCT_VALUE_CAP = 2000
 
 
 def _friendly_type(series: pd.Series) -> str:
@@ -70,15 +83,19 @@ def _value_text(value) -> str:
 def _distinct_values(series: pd.Series, friendly_type: str) -> list[str] | None:
     """The column's distinct values as text, or None when it should not offer completions.
 
-    None for a continuous column and for one above `DISTINCT_VALUE_CAP`; an empty list only when the
-    column genuinely holds no non-null value. Floats are taken as the continuous case -- a measure
-    like a duration in seconds has no value worth completing, while discrete numbers (a month, a set
-    position) do and are integers.
+    None for a continuous column, for one whose distinct count is too high a share of its rows to be
+    a dimension (`DIMENSION_RATIO`, with `SMALL_VALUE_SET` as the small-frame escape), and for one
+    over `DISTINCT_VALUE_CAP` whatever its ratio; an empty list only when the column genuinely holds
+    no non-null value. Floats are taken as the continuous case -- a measure like a duration in
+    seconds has no value worth completing, while discrete numbers (a month, a set position) do and
+    are integers.
     """
     if friendly_type == "number" and pdt.is_float_dtype(series.dtype):
         return None
     uniques = pd.unique(series.dropna())
     if len(uniques) > DISTINCT_VALUE_CAP:
+        return None
+    if len(uniques) > max(SMALL_VALUE_SET, DIMENSION_RATIO * len(series)):
         return None
     texts = [_value_text(v) for v in uniques]
     # Numbers sort numerically rather than as text, so a month list reads 1,2,...,10 not 1,10,11,2.

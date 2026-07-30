@@ -118,8 +118,9 @@ DATASET_SCHEMA: dict[str, Any] = {
                     "type": "array",
                     "description": (
                         "The column's distinct values as text, for value completion in a host editor. "
-                        "Present only when the column is discrete and its distinct count is within the "
-                        "build's cap; absent means 'do not offer completions', not 'no values'. Text "
+                        "Present only when the column is discrete and the build judged it a dimension "
+                        "worth completing, by its distinct count as a share of its rows; absent means "
+                        "'do not offer completions', not 'no values'. Text "
                         "regardless of the column's type, and unquoted: it is the datum, not the "
                         "literal syntax, so a host quotes it according to `type`."
                     ),

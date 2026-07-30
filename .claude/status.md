@@ -42,8 +42,8 @@ place of rules it used to hand-mirror.
 
 The counterpart to Stream G. G published what is *legal* (the grammar); this publishes the *shape*
 of what `demokit` writes, and the *data* a host needs to complete a value. J1 and J2 shipped in
-v1.7.0 (commit `5e6770d`, tagged and pushed) and J4 in v1.8.0. The gate is green at **229 tests**
-(was 162).
+v1.7.0 (commit `5e6770d`, tagged and pushed), J4 and J5 in v1.8.0, and J3 in v1.10.0, which closes
+the stream. The gate is green at **250 tests** (was 162).
 
 - [x] **J1. `dataset.schema.json`.** Shipped as `esql.DATASET_SCHEMA` (`src/esql/dataset_schema.py`):
   the `<id>.json` asset declared as JSON Schema. `build_demo` validates its output dict against it
@@ -76,7 +76,7 @@ v1.7.0 (commit `5e6770d`, tagged and pushed) and J4 in v1.8.0. The gate is green
   It lives here rather than in portfolio's `backend/esql/` because `build_demo` composes the whole
   output dict — a dataset's `demo.py` only hands it a spec.
 
-- [ ] **J3. The cap is set almost exactly wrong, and is probably the wrong instrument.** Filed from
+- [x] **J3. The cap is set almost exactly wrong, and is probably the wrong instrument.** Filed from
   portfolio 2026-07-29 after wiring J2 into the editor. The Grateful Dead dataset has **520** distinct
   venues against `DISTINCT_VALUE_CAP = 500`, so `venue` ships nothing and `WHERE venue = '` offers
   nothing — the one column where a visitor most needs help spelling (`Magoo's Pizza Parlor`). Missing
@@ -90,6 +90,10 @@ v1.7.0 (commit `5e6770d`, tagged and pushed) and J4 in v1.8.0. The gate is green
   generous absolute ceiling for asset-size safety, rather than one count doing both jobs badly.
 
   Either fix unblocks portfolio. The ratio version is the one worth having.
+
+  **Shipped in v1.10.0**, the ratio version. See that entry in the settled record: the count could
+  not have been raised to admit venue without also admitting `quant`, so the cheap fix was not
+  available even as a stopgap.
 
 - [x] **J4. A quote inside a same-quoted literal parses and then matches nothing.** Shipped in
   v1.8.0; see that entry in the settled record. Both candidate fixes were taken, doubling *and*
@@ -756,6 +760,46 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   still the better default, since a delimiter swap reads better than a doubled quote. What changes
   is that it no longer has to be the *only* answer, and a visitor typing the apostrophe form by hand
   now gets an error telling them what to do instead of a confident empty table.
+
+## v1.10.0 — value completions are decided by ratio, not by one count (2026-07-29)
+
+- [x] **J3.** `demokit` now asks "is this column a dimension?" rather than "does it have few enough
+  values?". Bumped `1.9.0 -> 1.10.0`; the gate is green at **250 tests** (was 247).
+
+  Three constants, because the old single count was answering three questions at once and getting two
+  of them wrong:
+
+  - **`DIMENSION_RATIO = 0.05`** — distinct values as a share of rows. This is the real test, since a
+    dimension sits far below its row count and a measure or free-text column climbs toward 100%.
+  - **`SMALL_VALUE_SET = 50`** — ships regardless of ratio. A ratio says nothing on a small frame
+    (four states over fifty rows is 8%), and any set this small is worth scrolling anyway. Without it
+    the fix would have broken small demo datasets to fix a large one.
+  - **`DISTINCT_VALUE_CAP = 2000`** — asset size only, not usefulness. 5% of a million-row frame is
+    50,000 values, so the ceiling has to stay.
+
+  **5% is not an arbitrary pick: it is the only band that keeps every current decision.** Checked
+  against `sales.csv` column by column, and the new rule reproduces the old verdict on all nine
+  while admitting venue:
+
+  | column | distinct / rows | ratio | ships |
+  |---|---|---|---|
+  | `state` / `year` / `cust` / `prod` / `month` / `day` / `credit` | 2–31 / 10,000 | ≤0.3% | yes, as before |
+  | `quant` (a measure) | 1,000 / 10,000 | 10% | no, as before |
+  | `date` (near-unique) | 1,818 / 10,000 | 18% | no, as before |
+  | `venue` (the filed case) | 520 / 39,774 | 1.3% | **yes**, 6.5 KB of JSON |
+
+  That band matters in both directions. Raising the count to 1000 as the cheap fix would have
+  admitted `quant` at 10% — a thousand quantities nobody completes — so the count could not be set to
+  include venue without also including a measure. The ratio separates them by an order of magnitude.
+
+  **`values` in `DATASET_SCHEMA` no longer describes itself as capped**, since "within the build's
+  cap" is now only a third of the rule. It says the build judged the column a dimension by its
+  distinct count as a share of its rows, without naming the numbers: a published description that
+  carries a threshold is a second copy of it, and J5 is the standing lesson about prose nothing binds.
+
+  **Portfolio-side follow-up: rebuild, nothing to change.** No new name in `esql.__all__`, no
+  `GRAMMAR` key and no slot kind, so neither guard fires. The visible effect is that a build against
+  1.10.0 emits `values` for `venue`, and `WHERE venue = '` starts completing.
 
 ## 3. Engine-side prep for the ESQL demo
 
