@@ -185,8 +185,9 @@ def test_offsetting_a_non_numeric_attribute_is_a_parsing_error(monthly_data: pd.
 
 
 def test_an_unknown_word_is_read_as_a_literal_not_a_reference(monthly_data: pd.DataFrame):
-    # `nope` is no column, so this never becomes an entry value and fails as a bad value instead.
-    with pytest.raises(ParsingError, match="Invalid column reference or value"):
+    # `nope` is no column, so this never becomes an entry value and fails as a bad value instead:
+    # against a text column, an unquoted word is a literal that forgot its quotes.
+    with pytest.raises(ParsingError, match="A text value must be quoted"):
         monthly_data.esql.query("SELECT cust, g1.quant.sum OVER g1 SUCH THAT g1.cust = nope")
 
 

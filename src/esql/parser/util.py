@@ -780,53 +780,58 @@ def _parse_condition_value(
             token=condition,
         )
 
-    if operator in [">=", "<=", ">", "<"]:
-        if _is_quoted_date(value) and pd.api.types.is_object_dtype(column_dtype):
-            try:
-                date_str = _unquote(value).replace("/", "-")
-                return datetime.strptime(date_str, "%Y-%m-%d").date()
-            except ValueError:
-                raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition) from None
-        elif pd.api.types.is_numeric_dtype(column_dtype):
-            try:
-                value = float(value)
-                return int(value) if value.is_integer() else value
-            except Exception:
-                raise ParsingError(error_type, f"Invalid value in condition: '{condition}'", token=condition) from None
-        raise ParsingError(
-            error_type, f"Invalid column reference or value in condition: '{condition}'", token=condition
-        )
-
-    elif operator == "CONTAINS":
+    # CONTAINS is the one operator whose value is not read as the column's own family: it is a
+    # substring of the text, so any quoted text will do.
+    if operator == "CONTAINS":
         if not _is_quoted(value):
             raise ParsingError(
                 error_type, f"CONTAINS needs a quoted text value in condition: '{condition}'", token=condition
             )
         return _unquote(value)
 
-    # Every operator the dtype gate let through is one of the eight, so this is `=`, `==` or `!=`.
-    # The dtype checks in these branches pick which family's *coercion* to apply, not whether the
-    # comparison is legal -- that question was already answered above.
-    else:
-        if value.lower() in ["true", "false"] and pd.api.types.is_bool_dtype(column_dtype):
-            return value.lower() == "true"
-        elif _is_quoted_date(value) and pd.api.types.is_object_dtype(column_dtype):
-            try:
-                date_str = _unquote(value).replace("/", "-")
-                return datetime.strptime(date_str, "%Y-%m-%d").date()
-            except ValueError:
-                raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition) from None
-        elif _is_quoted(value) and pd.api.types.is_string_dtype(column_dtype):
-            return _unquote(value)
-        elif pd.api.types.is_numeric_dtype(column_dtype):
-            try:
-                value = float(value)
-                return int(value) if value.is_integer() else value
-            except Exception:
-                raise ParsingError(error_type, f"Invalid value in condition: '{condition}'", token=condition) from None
-        raise ParsingError(
-            error_type, f"Invalid column reference or value in condition: '{condition}'", token=condition
-        )
+    # Everything else compares against a value of the column's own family, so the coercion is chosen
+    # by the family and not by the operator. Ordering and equality used to have a chain each, and
+    # both chains ended by asking pandas whether the dtype was numeric -- which is True for a bool
+    # column, so `credit = 1` read 1 as the value and matched the true rows (K3).
+    if family == "number":
+        return _numeric_value(value, condition, error_type)
+    if family == "date":
+        return _date_value(value, condition, error_type)
+    if family == "boolean":
+        if value.lower() not in ["true", "false"]:
+            raise ParsingError(
+                error_type,
+                f"A boolean column compares against true or false in condition: '{condition}'",
+                token=condition,
+            )
+        return value.lower() == "true"
+    if not _is_quoted(value):
+        raise ParsingError(error_type, f"A text value must be quoted in condition: '{condition}'", token=condition)
+    return _unquote(value)
+
+
+def _numeric_value(value: str, condition: str, error_type: ParsingErrorType) -> float | int:
+    try:
+        number = float(value)
+    except ValueError:
+        raise ParsingError(error_type, f"Invalid value in condition: '{condition}'", token=condition) from None
+    return int(number) if number.is_integer() else number
+
+
+def _date_value(value: str, condition: str, error_type: ParsingErrorType) -> date:
+    """A date value is a quoted `YYYY-MM-DD` (or `YYYY/MM/DD`), and nothing else is guessed at.
+
+    Anything quoted used to reach a date column as *text*, because pandas reports the object dtype
+    dates are stored as as a string dtype: `date = 'hello'` compared a string against date objects
+    and returned nothing, while `date != 'hello'` returned everything. Both were answers to a
+    question nobody asked (K3).
+    """
+    if not _is_quoted_date(value):
+        raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition)
+    try:
+        return datetime.strptime(_unquote(value).replace("/", "-"), "%Y-%m-%d").date()
+    except ValueError:
+        raise ParsingError(error_type, f"Invalid date in condition: '{condition}'", token=condition) from None
 
 
 ###########################################################################
