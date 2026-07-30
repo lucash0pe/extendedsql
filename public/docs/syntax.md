@@ -20,6 +20,7 @@ The per-clause rules this document explains in prose are also available machine-
   - [Entry values](#entry-values)
 - [HAVING](#having)
 - [ORDER BY](#order-by)
+  - [The number shorthand](#the-number-shorthand)
 
 
 ## Structure
@@ -268,16 +269,29 @@ The following is also a valid HAVING clause, assuming the groups `g1` and `g2` a
 
 ## ORDER BY
 
-The ORDER BY clause determines the order of the rows in the outputted table. It should be a number from 0 up to the amount of grouping attributes in the [SELECT](#select) clause, though `ORDER BY 0` will produce the same result as if you omitted the ORDER BY clause from the query. 
+The ORDER BY clause determines the order of the rows in the outputted table. It takes a comma-separated list of [SELECT](#select) terms to sort by, outermost first. A term is a grouping attribute or an aggregate, and a `-` in front of it sorts that term descending:
 
-ORDER BY will order rows alphabetically or numerically (lowest to highest), starting with the first grouping attribute defined in the SELECT clause and continuing in the order they were defined. If value is 1, it will sort the rows by the first grouping attribute. If the value is 2, it will sort the first attribute and then sort the second attribute while maintaining the order or the first. This can repeat for each possible grouping attribute. Define attributes in the SELECT clause in the order you want them to be sorted.
+```sh
+ORDER BY song                    -- alphabetically by song
+ORDER BY -position.count         -- most played first
+ORDER BY -position.count, song   -- most played first, ties broken alphabetically
+```
 
-If you would like to sort the data in reverse order (Z --> A or highest to lowest), you can mark the ORDER BY value as a negative number. This negative number still cannot be outside the range of the grouping attributes.
+Each term carries its own direction, so `ORDER BY -position.count, song` runs the count down and the song up.
 
-If `cust` and `prod` were the grouping attributes in the SELECT clause, the following would be a valid ORDER BY clause:
+A term must be something the query returns. This is stricter than SQL, where ORDER BY can name a column the query does not select, and grouping is why: a column that is neither a grouping attribute nor inside an aggregate has no single value in an output row to sort by. Naming one is a parsing error that lists the terms available.
 
-`ORDER BY 2`
+Sorting is alphabetical for text and low-to-high for numbers and dates. A row with no value for a term (an aggregate whose [SUCH THAT](#such-that) section matched nothing) sorts last.
 
-To sort it in the reverse order, you would instead write:
+### The number shorthand
 
-`ORDER BY -2`
+A single number is shorthand for the first N grouping attributes, in the order the SELECT clause declares them. It is *first N*, not the Nth:
+
+| written | means |
+|---|---|
+| `ORDER BY 1` | sort by the first grouping attribute |
+| `ORDER BY 2` | sort by the first, then the second |
+| `ORDER BY -2` | the same two, both descending |
+| `ORDER BY 0` | no sort, the same as omitting the clause |
+
+The number can never reach an aggregate, however large it is, because the sort it describes always begins at the first grouping attribute. That is what the term list above is for. If `cust` and `prod` are the grouping attributes, `ORDER BY 2` and `ORDER BY cust, prod` are the same query.

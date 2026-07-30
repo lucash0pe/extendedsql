@@ -25,6 +25,7 @@ from esql.parser.types import (
     ParsedWhereClause,
     SimpleCondition,
     SimpleGroupCondition,
+    SortTerm,
 )
 from esql.parser.util import (
     _has_wrapping_parenthesis,
@@ -647,41 +648,94 @@ def test_parse_having_clause_raises_error_for_non_numeric_comparison_value(colum
 ###########################################################################
 # PARSE_ORDER_BY_CLAUSE TESTS
 ###########################################################################
-def test_order_by_clause_returns_expected_structure():
-    parsedOrderByClause = parse_order_by_clause(order_by_clause="3", number_of_select_grouping_attributes=3)
-    expected = 3
-    assert parsedOrderByClause == expected
+ORDER_BY_ATTRIBUTES = ["cust", "prod", "state"]
+ORDER_BY_TERMS = ["cust", "prod", "state", "quant.sum", "g1.quant.avg"]
 
 
-def test_order_by_clause_returns_expected_structure_for_negative_number():
-    parsedOrderByClause = parse_order_by_clause(order_by_clause="-3", number_of_select_grouping_attributes=3)
-    expected = -3
-    assert parsedOrderByClause == expected
-
-
-def test_order_by_clause_raises_error_for_non_number_input():
-    with pytest.raises(ParsingError) as parsingError:
-        parse_order_by_clause(order_by_clause="apple", number_of_select_grouping_attributes=3)
-    assert (
-        parsingError.value.error_type == ParsingErrorType.ORDER_BY_CLAUSE
-        and "Invalid value" in parsingError.value.message
+def _order_by(clause: str | None):
+    return parse_order_by_clause(
+        order_by_clause=clause, grouping_attributes=ORDER_BY_ATTRIBUTES, select_items_in_order=ORDER_BY_TERMS
     )
 
 
-def test_order_by_clause_raises_error_for_non_integer_input():
+def test_order_by_clause_reads_the_integer_as_the_first_n_grouping_attributes():
+    """Not the Nth: `ORDER BY 3` sorts by the first attribute, then the second, then the third."""
+    assert _order_by("3") == [
+        SortTerm(term="cust", descending=False),
+        SortTerm(term="prod", descending=False),
+        SortTerm(term="state", descending=False),
+    ]
+
+
+def test_order_by_clause_reads_a_negative_integer_as_all_of_them_descending():
+    assert _order_by("-3") == [
+        SortTerm(term="cust", descending=True),
+        SortTerm(term="prod", descending=True),
+        SortTerm(term="state", descending=True),
+    ]
+
+
+def test_order_by_clause_reads_a_named_term():
+    assert _order_by("prod") == [SortTerm(term="prod", descending=False)]
+
+
+def test_order_by_clause_reads_an_aggregate_term():
+    assert _order_by("quant.sum") == [SortTerm(term="quant.sum", descending=False)]
+    assert _order_by("g1.quant.avg") == [SortTerm(term="g1.quant.avg", descending=False)]
+
+
+def test_order_by_clause_reads_a_leading_minus_as_descending():
+    assert _order_by("-quant.sum") == [SortTerm(term="quant.sum", descending=True)]
+    assert _order_by("- quant.sum") == [SortTerm(term="quant.sum", descending=True)]
+
+
+def test_order_by_clause_reads_a_list_with_a_direction_per_term():
+    assert _order_by("-quant.sum, cust") == [
+        SortTerm(term="quant.sum", descending=True),
+        SortTerm(term="cust", descending=False),
+    ]
+
+
+def test_order_by_clause_resolves_a_term_case_insensitively():
+    assert _order_by("QUANT.SUM") == [SortTerm(term="quant.sum", descending=False)]
+    assert _order_by("Cust") == [SortTerm(term="cust", descending=False)]
+
+
+def test_order_by_clause_reads_nothing_as_no_sort():
+    assert _order_by(None) == []
+    assert _order_by("0") == []
+
+
+def test_order_by_clause_raises_error_for_a_term_that_is_not_selected():
+    """`quant` is a column of the frame but not a SELECT term, so a projected row holds no value
+    for it. The error names what is available, since the answer is in the query already."""
     with pytest.raises(ParsingError) as parsingError:
-        parse_order_by_clause(order_by_clause="2.3", number_of_select_grouping_attributes=3)
-    assert (
-        parsingError.value.error_type == ParsingErrorType.ORDER_BY_CLAUSE
-        and "Invalid value" in parsingError.value.message
-    )
+        _order_by("quant")
+    assert parsingError.value.error_type == ParsingErrorType.ORDER_BY_CLAUSE
+    assert "is not a SELECT term" in parsingError.value.message
+    assert "quant.sum" in parsingError.value.message
+
+
+def test_order_by_clause_raises_error_for_a_non_integer_number():
+    """`2.3` is not an index and is not a term either, so it is refused as a term."""
+    with pytest.raises(ParsingError) as parsingError:
+        _order_by("2.3")
+    assert parsingError.value.error_type == ParsingErrorType.ORDER_BY_CLAUSE
+    assert "is not a SELECT term" in parsingError.value.message
+
+
+def test_order_by_clause_raises_error_for_an_empty_term_in_a_list():
+    with pytest.raises(ParsingError) as parsingError:
+        _order_by("cust, , prod")
+    assert parsingError.value.error_type == ParsingErrorType.ORDER_BY_CLAUSE
+    assert "Empty sort term" in parsingError.value.message
 
 
 def test_order_by_clause_raises_error_for_out_of_range_inputs():
     out_of_range_values = ["-44", "1001", "-543578", "7"]
     for value in out_of_range_values:
         with pytest.raises(ParsingError) as parsingError:
-            parse_order_by_clause(order_by_clause=value, number_of_select_grouping_attributes=3)
+            _order_by(value)
         assert (
             parsingError.value.error_type == ParsingErrorType.ORDER_BY_CLAUSE
             and f"{value} out of range" in parsingError.value.message

@@ -2,7 +2,16 @@ import pytest
 
 from esql.execution.algorithms import order_by_sort, project_select_attributes
 from esql.execution.grouped_row import GroupedRow
-from esql.parser.types import AggregatesDict, ParsedSelectClause
+from esql.parser.types import AggregatesDict, ParsedSelectClause, SortTerm
+
+
+def _first(attributes: list[str], count: int, descending: bool = False) -> list[SortTerm]:
+    """The sort `ORDER BY <count>` describes: the first `count` grouping attributes, in order.
+
+    These tests predate named sort terms and were written against the integer form, so this keeps
+    them saying what they said. The parser produces the same list from `ORDER BY <count>`.
+    """
+    return [SortTerm(term=attribute, descending=descending) for attribute in attributes[:count]]
 
 
 def test_order_by_sort():
@@ -55,9 +64,9 @@ def test_order_by_sort():
         {"cust": "Wally", "prod": "Cherry", "round": 527.54, "sum": 63832},
         {"cust": "Wally", "prod": "Ham", "round": 533.85, "sum": 59257},
     ]
-    assert order_by_sort(projected_table=order_by_0, order_by=0, grouping_attributes=grouping_attributes) == order_by_0
-    assert order_by_sort(projected_table=order_by_0, order_by=1, grouping_attributes=grouping_attributes) == order_by_1
-    assert order_by_sort(projected_table=order_by_0, order_by=2, grouping_attributes=grouping_attributes) == order_by_2
+    assert order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 0)) == order_by_0
+    assert order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 1)) == order_by_1
+    assert order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 2)) == order_by_2
 
 
 def test_order_by_sort_works_when_grouping_attributes_are_not_at_the_front():
@@ -95,9 +104,9 @@ def test_order_by_sort_works_when_grouping_attributes_are_not_at_the_front():
         {"round": 527.54, "cust": "Wally", "sum": 63832, "prod": "Cherry"},
         {"round": 533.85, "cust": "Wally", "sum": 59257, "prod": "Ham"},
     ]
-    assert order_by_sort(projected_table=order_by_0, order_by=0, grouping_attributes=grouping_attributes) == order_by_0
-    assert order_by_sort(projected_table=order_by_0, order_by=1, grouping_attributes=grouping_attributes) == order_by_1
-    assert order_by_sort(projected_table=order_by_0, order_by=2, grouping_attributes=grouping_attributes) == order_by_2
+    assert order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 0)) == order_by_0
+    assert order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 1)) == order_by_1
+    assert order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 2)) == order_by_2
 
 
 def test_order_by_sort_works_with_numbers():
@@ -129,9 +138,9 @@ def test_order_by_sort_works_with_numbers():
         {"round": 520, "sum": 58262},
         {"round": 520, "sum": 67995},
     ]
-    assert order_by_sort(projected_table=order_by_0, order_by=0, grouping_attributes=grouping_attributes) == order_by_0
-    assert order_by_sort(projected_table=order_by_0, order_by=1, grouping_attributes=grouping_attributes) == order_by_1
-    assert order_by_sort(projected_table=order_by_0, order_by=2, grouping_attributes=grouping_attributes) == order_by_2
+    assert order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 0)) == order_by_0
+    assert order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 1)) == order_by_1
+    assert order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 2)) == order_by_2
 
 
 def test_order_by_sort_with_numeric_attribute():
@@ -175,13 +184,13 @@ def test_order_by_sort_with_numeric_attribute():
         {"cust": "Boo", "num": 8},
         {"cust": "Boo", "num": 6},
     ]
-    assert order_by_sort(projected_table=order_by_0, order_by=0, grouping_attributes=grouping_attributes) == order_by_0
+    assert order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 0)) == order_by_0
     assert (
-        order_by_sort(projected_table=order_by_0, order_by=-1, grouping_attributes=grouping_attributes)
+        order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 1, descending=True))
         == order_by_neg_1
     )
     assert (
-        order_by_sort(projected_table=order_by_0, order_by=-2, grouping_attributes=grouping_attributes)
+        order_by_sort(projected_table=order_by_0, order_by=_first(grouping_attributes, 2, descending=True))
         == order_by_neg_2
     )
 

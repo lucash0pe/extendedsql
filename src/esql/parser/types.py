@@ -64,6 +64,22 @@ class EntryValue(TypedDict):
     delta: float
 
 
+class SortTerm(TypedDict):
+    """One key of the output sort: a SELECT term, and which way to run it.
+
+    `term` is a projected label, so it is the key a projected row is already indexed by, whether it
+    names a grouping attribute (`song`) or an aggregate (`position.count`, `g1.quant.sum`). That is
+    what lets execution sort by an aggregate at all: by the time the sort runs, an aggregate is just
+    another column of the row.
+
+    The integer form (`ORDER BY 2`) parses into a list of these rather than staying a number, so
+    there is one thing to sort by and one place that knows what descending means.
+    """
+
+    term: str
+    descending: bool
+
+
 class SimpleCondition(TypedDict):
     column: str
     operator: str
@@ -149,5 +165,5 @@ class ParsedQuery(TypedDict):
     where: ParsedWhereClause | None
     such_that: ParsedSuchThatClause | None
     having: ParsedHavingClause | None
-    order_by: int
+    order_by: list[SortTerm]
     aggregates: AggregatesDict

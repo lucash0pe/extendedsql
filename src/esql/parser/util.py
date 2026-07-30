@@ -27,6 +27,7 @@ from esql.parser.types import (
     SemiJoinCondition,
     SimpleCondition,
     SimpleGroupCondition,
+    SortTerm,
     aggregate_key,
 )
 
@@ -676,23 +677,87 @@ def _parse_aggregate_condition(
 ###########################################################################
 # ORDER BY Clause Parsing
 ###########################################################################
-def parse_order_by_clause(order_by_clause: str | None, number_of_select_grouping_attributes: int):
+def parse_order_by_clause(
+    order_by_clause: str | None, grouping_attributes: list[str], select_items_in_order: list[str]
+) -> list[SortTerm]:
+    """Read ORDER BY as the list of keys the output is sorted by, outermost first.
+
+    Two spellings, one result. A **term list** names SELECT terms and is the general form:
+    `ORDER BY -position.count, song` sorts by the count descending, then by song. An **integer** is
+    shorthand for the first N grouping attributes, which is what ESQL had before terms existed:
+    `ORDER BY 2` is `ORDER BY <first>, <second>` and a negative runs them all descending. The
+    integer parses into the same list, so nothing downstream knows there are two spellings.
+
+    A term has to be something SELECT projects, because the sort runs over projected rows and a
+    column that was never projected holds no value there. That is stricter than SQL, where ORDER BY
+    can reach a column the query does not return, and it is forced by grouping: a column that is
+    neither grouped on nor aggregated has no single value per output row to sort by.
+    """
     if order_by_clause is None:
-        return 0
+        return []
+    written = order_by_clause.strip()
+    if not written:
+        return []
+
+    index = _as_integer(written)
+    if index is not None:
+        return _sort_terms_from_index(index, written, grouping_attributes)
+
+    terms = []
+    for part in written.split(","):
+        written_term = part.strip()
+        descending = written_term.startswith("-")
+        if descending:
+            written_term = written_term[1:].strip()
+        if not written_term:
+            raise ParsingError(
+                ParsingErrorType.ORDER_BY_CLAUSE, f"Empty sort term in: '{written}'", token=order_by_clause
+            )
+        terms.append(SortTerm(term=_resolve_sort_term(written_term, select_items_in_order), descending=descending))
+    return terms
+
+
+def _as_integer(written: str) -> int | None:
+    """`written` as an int, or None when it is not one. None means "read it as a term list"."""
     try:
-        order_value = int(order_by_clause.strip())
+        return int(written)
     except ValueError:
-        raise ParsingError(
-            ParsingErrorType.ORDER_BY_CLAUSE, f"Invalid value: '{order_by_clause}'", token=order_by_clause
-        ) from None
-    if order_value > number_of_select_grouping_attributes or order_value < -number_of_select_grouping_attributes:
+        return None
+
+
+def _sort_terms_from_index(index: int, written: str, grouping_attributes: list[str]) -> list[SortTerm]:
+    """The integer shorthand: the first `|index|` grouping attributes, descending if it is negative.
+
+    Note this is *first N*, not *the Nth*. `ORDER BY 2` sorts by the first grouping attribute and
+    then by the second, which is why it cannot reach an aggregate however far it is extended: the
+    sort it describes always begins at the first grouping attribute. That is what the term list is
+    for, and why widening this number was not the fix.
+    """
+    if abs(index) > len(grouping_attributes):
         raise ParsingError(
             ParsingErrorType.ORDER_BY_CLAUSE,
-            f"{order_by_clause.strip()} out of range of the {number_of_select_grouping_attributes} "
+            f"{written} out of range of the {len(grouping_attributes)} "
             "grouping attributes provided in the select clause.",
-            token=order_by_clause,
+            token=written,
         )
-    return order_value
+    return [SortTerm(term=attribute, descending=index < 0) for attribute in grouping_attributes[: abs(index)]]
+
+
+def _resolve_sort_term(written_term: str, select_items_in_order: list[str]) -> str:
+    """The projected label `written_term` names, case-insensitively, or a ParsingError naming what is
+    available. Sorting by something the query does not return is a mistake worth reporting with the
+    list of what it could have meant, since the terms are right there in the query."""
+    if written_term in select_items_in_order:
+        return written_term
+    matches = [item for item in select_items_in_order if item.lower() == written_term.lower()]
+    if len(matches) == 1:
+        return matches[0]
+    raise ParsingError(
+        ParsingErrorType.ORDER_BY_CLAUSE,
+        f"'{written_term}' is not a SELECT term, so there is nothing to sort by. "
+        f"Available: {', '.join(select_items_in_order)}.",
+        token=written_term,
+    )
 
 
 ###########################################################################

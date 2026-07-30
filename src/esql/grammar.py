@@ -45,8 +45,16 @@ SLOT_KINDS = {
         "row rather than to a constant."
     ),
     "aggregate_condition": "An aggregate compared against a number.",
+    "sort_term": (
+        "A SELECT term to sort the output by, either a grouping attribute or an aggregate, "
+        "optionally prefixed with `-` to sort it descending. A term must be one the query "
+        "projects, since the sort runs over the returned rows."
+    ),
     "grouping_attribute_index": (
-        "A 1-based index into the SELECT grouping attributes. Negative reverses the sort."
+        "Shorthand for a sort term list: a count N of the SELECT grouping attributes, meaning sort "
+        "by the first N of them in the order SELECT declares them. It is *first N*, not the Nth, so "
+        "`2` sorts by the first attribute and then the second. Negative runs them all descending. "
+        "This cannot reach an aggregate at any value, which is what `sort_term` is for."
     ),
 }
 
@@ -101,10 +109,14 @@ CLAUSES = {
     "ORDER BY": {
         "required": False,
         "requires": [],
-        "separator": None,
-        "accepts": ["grouping_attribute_index"],
+        "separator": ",",
+        "accepts": ["sort_term", "grouping_attribute_index"],
         "operators": [],
-        "summary": "Sorts by one of the SELECT grouping attributes, chosen by 1-based position.",
+        "summary": (
+            "Sorts the output by a list of SELECT terms, outermost first, each optionally prefixed "
+            "with `-` for descending. A bare number is shorthand for the first N grouping "
+            "attributes. Omitted, the row order is unspecified."
+        ),
     },
 }
 

@@ -16,6 +16,7 @@ from esql.parser.types import (
     ParsedSelectClause,
     SimpleCondition,
     SimpleGroupCondition,
+    SortTerm,
 )
 
 
@@ -104,7 +105,8 @@ def test_get_parsed_query_returns_the_expected_structure(sales_test_data: pd.Dat
         having=GroupAggregateCondition(
             aggregate=GroupAggregate(group="g1", column="quant", function="avg"), operator=">", value=0.5
         ),
-        order_by=1,
+        # `ORDER BY 1` is shorthand for the first grouping attribute, ascending.
+        order_by=[SortTerm(term="cust", descending=False)],
         aggregates=AggregatesDict(
             global_scope=[
                 GlobalAggregate(column="quant", function="avg"),
@@ -145,7 +147,7 @@ def test_get_parsed_query_returns_expected_structure_with_missing_parts(sales_te
         where=None,
         such_that=None,
         having=None,
-        order_by=0,
+        order_by=[],
         aggregates=AggregatesDict(global_scope=[], group_specific=[]),
     )
     assert (
