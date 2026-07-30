@@ -153,7 +153,7 @@ expressible in `slot_kinds`/`accepts`**, since that is the channel a host actual
 names, and a `unhandledSlotKinds` check fails its suite when this repo declares a kind it has no case
 for — the reading-side twin of the export-diff guard. Entry values are offered.
 
-- [ ] **G3. `operators` is per clause but legality is also per *dtype*, and that half is unpublished.**
+- [x] **G3. `operators` is per clause but legality is also per *dtype*, and that half is unpublished.**
   Filed from portfolio 2026-07-29, found by testing the engine rather than reading it. The parser
   rejects an ordering comparison on a non-numeric column:
 
@@ -174,6 +174,12 @@ for — the reading-side twin of the export-diff guard. Entry values are offered
   offer illegal operators, or hand-mirror the table above, which is the restatement Stream G exists
   to end. **Portfolio is deliberately not implementing this until it can be read** — the table is
   recorded here as a finding, not as a spec for someone to copy downstream.
+
+  **Shipped in v1.11.0** as `GRAMMAR["operators"]["dtypes"]`, per-operator. See that entry in the
+  settled record. One correction to the table above, found by probing the parser cell by cell rather
+  than trusting the filing: **`date CONTAINS` was accepted**, not rejected, and it worked -- it
+  substring-matched the date's ISO text. That cell is now genuinely rejected, which is the one
+  behavior change in the release.
 
 The front-end currently hand-mirrors rules this engine owns: which slot kinds each clause accepts,
 that `count` is the only aggregate legal on a non-numeric column (mirroring `_parse_aggregate`), that
@@ -282,7 +288,8 @@ H1 shipped; see the settled record. What it leaves open:
 Opened 2026-07-29. Findings from the v1.8.0 work that are **not** about a missing feature: the
 parser accepts a query and answers it wrongly, or refuses one it should take. J4 was the first of
 these and is fixed; these two were turned up alongside it. **Both shipped in v1.9.0**; see that entry
-in the settled record. The stream is closed unless something new lands in it.
+in the settled record. **Reopened 2026-07-29** by K3 below, turned up the same way, by probing the
+parser rather than reading it.
 
 The shape they share with J4 is worth naming, because it is what to look for next: **a rule the
 parser applies by rewriting the query string before it knows the query's structure.** Lowercasing
@@ -336,6 +343,34 @@ patched twice.
 
   **Done in v1.9.0.** Both parameters are required and
   `test_error_type_is_a_required_argument` pins that, so a default cannot come back.
+
+- [ ] **K3. A boolean column compares against a number, because pandas counts bool as numeric.**
+  Found while building G3, by probing every operator against every dtype family. `WHERE credit = 1`
+  parses and **matches the true rows**, `credit = 0` matches the false ones, and `credit = 5` matches
+  nothing:
+
+  ```
+  df.esql.query("SELECT g WHERE flag = 1")       -> the True rows
+  df.esql.query("SELECT g WHERE flag = 5")       -> no rows, no error
+  df.esql.query("SELECT g WHERE flag = 'true'")  -> [WHERE CLAUSE] Invalid value
+  ```
+
+  The asymmetry is what makes it a bug rather than a lenient convenience: the *quoted* boolean is
+  refused while the numeric one is silently accepted, so the two spellings a person is most likely to
+  reach for behave in opposite ways. The cause is `_parse_condition_value`'s coercion chain ending in
+  `is_numeric_dtype(column_dtype)`, which is **True for a bool column**, so a bool falls through to
+  the numeric branch and `1` becomes the value it compares against. `dtype_family` already knows bool
+  is its own family (it checks bool before number, exactly because pandas conflates them), so the fix
+  is to let the coercion dispatch on the family the same way the dtype gate now does.
+
+  **Deliberately not fixed in v1.11.0.** G3 published *operator* legality, and `=` on a boolean column
+  is legal; this is about which *values* that comparison accepts, a second question the same function
+  answers. Folding it in would have put an unrelated behavior change under a release about publishing
+  a table. It is small and self-contained: dispatch the `=`/`!=`/`==` branch on `family` rather than on
+  four dtype predicates, and a bool column then takes only `true`/`false`.
+
+  Worth noting the same chain is why `credit = 5` returns an empty table instead of an error, which is
+  the softer version of the same problem.
 
 ---
 
@@ -800,6 +835,58 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   **Portfolio-side follow-up: rebuild, nothing to change.** No new name in `esql.__all__`, no
   `GRAMMAR` key and no slot kind, so neither guard fires. The visible effect is that a build against
   1.10.0 emits `values` for `venue`, and `WHERE venue = '` starts completing.
+
+## v1.11.0 — operator legality by dtype, published and enforced from one table (2026-07-29)
+
+- [x] **G3.** The second axis of operator legality is now readable: `GRAMMAR["operators"]["dtypes"]`
+  gives, per operator, which of the four dtype families it applies to. Bumped `1.10.0 -> 1.11.0`; the
+  gate is green at **319 tests** (was 250).
+
+  **It is the rule, not a description of it.** `OPERATOR_DTYPES` in `parser/util.py` is a single table
+  that `_parse_condition_value` gates on *before* it coerces anything, and `GRAMMAR` exports verbatim.
+  That is stronger than G1 managed: G1 could only bind its description to behavior with tests, because
+  the parser had no declarative rule to read. Here the export and the enforcement are the same object,
+  so the two cannot drift at all.
+
+  Splitting the gate out made the function say what it means. It answers two questions and used to
+  answer them in one tangle of dtype predicates: *does this operator apply to this kind of column*
+  (about the operator, answerable before the value is read) and *can this value be read as that kind*
+  (about the value). Now the first is a table lookup and the branches below only pick a coercion.
+
+  **The filed table was wrong in one cell, and probing found it.** `date CONTAINS '2020'` was
+  **accepted** and worked, substring-matching the date's ISO rendering, because dates are stored as
+  object dtype and pandas reports object dtype as a *string* dtype -- so the guard meaning "text
+  column" let dates through. Decided to reject it: the behavior was never stated anywhere, publishing
+  it would rest the contract on that loose check, and a range (`date >= '2020-01-01' AND date <=
+  '2020-12-31'`) is the honest spelling. This is the release's one behavior change. The old
+  `is_string_dtype` guard inside the CONTAINS branch is gone, because the gate now answers that
+  question first and a guard that can no longer fire is the K2 mistake again.
+
+  **One vocabulary, in one place.** `dtype_family` is now the only definition of the four families,
+  and `demokit._friendly_type` -- which decides a demo asset's `SchemaColumn.type` -- delegates to it
+  instead of keeping its own copy. That copy was a live hazard, not a tidiness point: a host reads a
+  column's `type` from the asset and looks it up in this table, so if the asset called something a
+  string that the parser treats as a date, every lookup would miss and the host would silently offer
+  nothing. `test_the_families_are_the_vocabulary_a_demo_asset_speaks` binds the two enums together.
+  It also fixed a real disagreement in passing: an all-null object column is a *date* column to the
+  parser, and the old `_friendly_type` called it a string, because it read the first non-null value
+  and there wasn't one.
+
+  **Bound in both directions, and verified to bite.** `tests/parser/test_grammar.py` runs all 32
+  cells (8 operators x 4 families) through the real parser in WHERE, and again in SUCH THAT since the
+  rule belongs to the operator rather than the clause. Tampering confirms each guard fails loudly:
+  claiming date takes CONTAINS fails 1, dropping an operator's rule fails 4, disabling the gate fails
+  23, renaming a family in the asset schema fails 1, and widening `>=` to text fails 2.
+
+  **Turned up and deliberately not fixed: K3**, a boolean column comparing against a number
+  (`WHERE credit = 1` matches the true rows). Filed in Stream K above. That is about which values a
+  legal comparison accepts, not about which comparisons are legal, and it did not belong in a release
+  about publishing the second.
+
+  **Portfolio-side follow-up: one read, no guard fires.** `dtypes` and `dtype_families` are new keys
+  *inside* `GRAMMAR["operators"]`, not new names in `esql.__all__`, and no slot kind changed, so
+  `grammar.json` simply grows two keys. The menu can stop offering `song >` by intersecting the
+  clause's `operators` with `dtypes[op]` for the column's `type`, which it already has from the asset.
 
 ## 3. Engine-side prep for the ESQL demo
 

@@ -373,6 +373,10 @@ def test_parse_where_clause_raises_error_for_missing_conditional_operators(colum
 
 
 def test_parse_where_clause_raises_error_for_invalid_values(column_dtypes: dict[str, np.dtype]):
+    """Two refusals live here, and they are answered at different points. `cust > 'Dan'` and
+    `credit > true` are refused for the *operator*, before the value is read at all, because ordering
+    a text or boolean column means nothing (`OPERATOR_DTYPES`). The rest are refused for the
+    *value*: the operator applies, and `123` is not something a text column holds."""
     invalid_values = [
         "cust = 123",
         "cust = 12.3",
@@ -387,7 +391,8 @@ def test_parse_where_clause_raises_error_for_invalid_values(column_dtypes: dict[
         with pytest.raises(ParsingError) as parsingError:
             parse_where_clause(where_clause=invalid_value, column_dtypes=column_dtypes)
         assert parsingError.value.error_type == ParsingErrorType.WHERE_CLAUSE and any(
-            error in parsingError.value.message for error in ["Invalid value", "Invalid column reference"]
+            error in parsingError.value.message
+            for error in ["Invalid value", "Invalid column reference", "does not apply to"]
         )
 
 

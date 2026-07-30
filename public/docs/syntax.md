@@ -5,7 +5,7 @@ This document contains information about writing ESQL queries. I will be providi
 
 This document is prose. The token sets it describes — the six keywords, the five aggregate functions, the comparison operators, and the semi-join predicate — are defined once in [`src/esql/parser/util.py`](../../src/esql/parser/util.py) as `KEYWORDS`, `AGGREGATE_FUNCTIONS`, `CONDITIONAL_OPERATORS` and `SEMI_JOIN_OPERATOR`, re-exported from `esql`. Read those if you need the authoritative list.
 
-The per-clause rules this document explains in prose are also available machine-readable as `esql.GRAMMAR` (see [`src/esql/grammar.py`](../../src/esql/grammar.py)): which slot kinds each clause accepts, which operators are legal in it, and what it requires. Anything generating a completion menu or a reference table should read that rather than re-deriving it from this page.
+The per-clause rules this document explains in prose are also available machine-readable as `esql.GRAMMAR` (see [`src/esql/grammar.py`](../../src/esql/grammar.py)): which slot kinds each clause accepts, which operators are legal in it, which column types each operator applies to, and what it requires. Anything generating a completion menu or a reference table should read that rather than re-deriving it from this page.
 
 ## Table of Contents
 - [Structure](#structure)
@@ -13,6 +13,7 @@ The per-clause rules this document explains in prose are also available machine-
 - [SELECT](#select)
 - [OVER](#over)
 - [WHERE](#where)
+  - [Which operators apply to which columns](#which-operators-apply-to-which-columns)
   - [CONTAINS](#contains)
   - [HAS](#has)
 - [SUCH THAT](#such-that)
@@ -107,6 +108,22 @@ The WHERE clause determines which rows will be filtered out of the inputted data
 
 WHERE clause conditions can include any column in the inputted datatable followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`, `CONTAINS`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing. 
 
+### Which operators apply to which columns
+
+Not every operator applies to every column. Equality works on all four kinds of column, ordering needs values with an order, and `CONTAINS` needs text:
+
+| column | `=` `!=` | `>` `>=` `<` `<=` | `CONTAINS` |
+|---|---|---|---|
+| number | yes | yes | no |
+| date | yes | yes | no |
+| text | yes | no | yes |
+| boolean | yes | no | no |
+
+An operator used against a column it does not apply to is a parsing error, raised before the value is even read, so `song > 'Dark Star'` is refused rather than answered with an empty table. This is a property of the operator and not of the clause: the same table governs [SUCH THAT](#such-that). [HAVING](#having) has no place in it, because it compares aggregates and every aggregate is numeric.
+
+A tool that offers completions should read this from `esql.GRAMMAR["operators"]["dtypes"]` rather than copying the table, since the parser enforces the same structure the export is built from.
+
+
 Conditions can be combined with `AND` and `OR`. The `NOT` operator can also be used for negation. 
 
 Conditions can handle `()` for order of operations, and they interpret `==` as `=`. A boolean column (like `credit` in the `sales` table) can also be a stand alone condition since it will implictly convert to a boolean.
@@ -126,7 +143,7 @@ Below is an example of a valid WHERE clause:
 Three rules apply to it and not to the other operators:
 
 - **It is case insensitive.** `'err'`, `'ERR'` and `'Err'` all match `Cherry`. This is the same behavior as SQL's `LIKE '%err%'`.
-- **Both sides must be text.** The column has to be a text column and the value has to be quoted. `quant CONTAINS '5'` is a parsing error, not a match against the digits of a number.
+- **Both sides must be text.** The column has to be a text column and the value has to be quoted. `quant CONTAINS '5'` is a parsing error, not a match against the digits of a number, and a date column is not text either: `date CONTAINS '2020'` is refused rather than matched against how the date is written. Use a range for that (`date >= '2020-01-01' AND date <= '2020-12-31'`).
 - **It is not available in HAVING**, which compares aggregates, and every aggregate is numeric.
 
 It works in [SUCH THAT](#such-that) exactly as it does here, prepended by a group name:
@@ -160,7 +177,7 @@ Four rules to know:
 ## SUCH THAT
 The SUCH THAT clause determines which of the remaining rows will be used to compute aggregates within a group. The SUCH THAT clause should contain a section for each defined group in the [OVER](#over) clause. These sections must be divided by commas, must contain only one group, and must not contain a group that is already defined in another section of the SUCH THAT clause.
 
-SUCH THAT clause conditions can include any column in the inputted datatable but every column name must start with the group name of the section combined using dot notation (e.g. `group1.month`). The group and column is followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`, `CONTAINS`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing.
+SUCH THAT clause conditions can include any column in the inputted datatable but every column name must start with the group name of the section combined using dot notation (e.g. `group1.month`). The group and column is followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`, `CONTAINS`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing. [Which operators apply to which columns](#which-operators-apply-to-which-columns) governs here exactly as it does in WHERE.
 
 Conditions can be combined with `AND` and `OR`. The `NOT` operator can also be used for negation. 
 

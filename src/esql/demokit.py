@@ -29,6 +29,7 @@ from pandas.api import types as pdt
 import esql.accessor  # noqa: F401  (registers the .esql accessor)
 from esql.accessor import _enforce_allowed_dtypes
 from esql.dataset_schema import DATASET_SCHEMA, DatasetSchemaError, validate_dataset
+from esql.parser.util import dtype_family
 
 # Whether a column ships its distinct values, for a host to offer as completions ("WHERE song = '"
 # should suggest real song names). The question is "does completing this column help?", and the
@@ -52,15 +53,14 @@ DISTINCT_VALUE_CAP = 2000
 
 
 def _friendly_type(series: pd.Series) -> str:
-    dt = series.dtype
-    if pdt.is_bool_dtype(dt):
-        return "boolean"
-    if pdt.is_numeric_dtype(dt):
-        return "number"
-    non_null = series.dropna()
-    if len(non_null) and hasattr(non_null.iloc[0], "isoformat"):
-        return "date"
-    return "string"
+    """The asset's `SchemaColumn.type` for a column of the enforced frame.
+
+    Delegates to the parser's `dtype_family`, because the asset and the parser have to agree on what
+    a column is: the asset tells a host `venue` is a string, and the host asks `GRAMMAR` which
+    operators apply to a string. Two copies of this mapping is two chances for the answer a host is
+    given to differ from the one the engine enforces.
+    """
+    return dtype_family(series.dtype)
 
 
 def _value_text(value) -> str:
