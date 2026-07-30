@@ -6,7 +6,15 @@ import pandas as pd
 
 
 class GlobalAggregate(TypedDict):
-    column: str
+    """One aggregate to compute per output row.
+
+    `column` is None for the bare row count (`count`, or `g1.count` with a group), which is the one
+    aggregate that names no column: it asks how many rows the group holds, and every row holds
+    itself. Every other function needs a column, and `column.count` counts that column's *distinct*
+    values, so a column named in an aggregate always bears on the answer.
+    """
+
+    column: str | None
     function: str
 
     def __eq__(self, other):
@@ -26,7 +34,10 @@ class AggregatesDict(TypedDict):
 
 
 def aggregate_key(aggregate: GlobalAggregate | GroupAggregate) -> str:
-    """How an aggregate is spelled as a key: `column.function`, or `group.column.function`.
+    """How an aggregate is spelled as a key: the parts it has, joined by dots.
+
+    That is `column.function` or `group.column.function`, and for the bare row count, which has no
+    column, `count` or `group.count`.
 
     The parser writes these into `select_items_in_order`, `GroupedRow` keys its data map by them and
     the HAVING evaluator looks one up, so all three have to agree exactly or a projected column
@@ -34,9 +45,11 @@ def aggregate_key(aggregate: GlobalAggregate | GroupAggregate) -> str:
     because the whole query was lowercased before parsing; now that identifiers carry the frame's
     spelling, they have to be built from the same parts by the same code.
     """
-    if "group" in aggregate:
-        return f"{aggregate['group']}.{aggregate['column']}.{aggregate['function']}"
-    return f"{aggregate['column']}.{aggregate['function']}"
+    parts = [aggregate["group"]] if "group" in aggregate else []
+    if aggregate["column"] is not None:
+        parts.append(aggregate["column"])
+    parts.append(aggregate["function"])
+    return ".".join(parts)
 
 
 class LogicalOperator(Enum):

@@ -11,6 +11,7 @@ The per-clause rules this document explains in prose are also available machine-
 - [Structure](#structure)
   - [Text values](#text-values)
 - [SELECT](#select)
+  - [Counting](#counting)
 - [OVER](#over)
 - [WHERE](#where)
   - [Which operators apply to which columns](#which-operators-apply-to-which-columns)
@@ -86,11 +87,30 @@ The SELECT clause determines the output columns of the query. It contains two ty
 Grouping attrubutes are the column names of the datatable that is being queried. It is important to know that ESQL will automatically group these variables (like GROUP BY in SQL), so all rows that contain the same combination of values in the grouping attributes will be in the same row in the output.
 
 <!-- grammar:aggregate-functions -->
-Aggregates are what will be calculated for each combination of grouping attributes. Aggregates must always contain an aggregate function supported by ESQL (`sum`, `avg`, `min`, `max`, `count`) and a column that contains numerical data (e.g. `quant` from the `sales` table) unless the aggregate function is `count`, which works with columns that contain any datatype.  Aggregates can be apart of a group defined in the [OVER](#over) clause. ESQL syntax exclusively utilizes dot notation with groups first, then the column name, and the aggregate function last. Therefore, aggregates can come in two forms: `column.function` or `group.column.function`.
+Aggregates are what will be calculated for each combination of grouping attributes. An aggregate names one of the aggregate functions supported by ESQL (`sum`, `avg`, `min`, `max`, `count`) and, for every function but `count`, a column that contains numerical data (e.g. `quant` from the `sales` table). `count` is the exception at both ends: it works with a column of any datatype, and it is the one function that can be written with no column at all. Aggregates can be apart of a group defined in the [OVER](#over) clause. ESQL syntax exclusively utilizes dot notation with groups first, then the column name, and the aggregate function last. Therefore, aggregates come in four forms: `count`, `group.count`, `column.function` or `group.column.function`.
 
 If you wanted to write a query with the grouping attributes `cust` and `prod` that computes the maximum value of `quant`, the sum of `quant` for the group `g1`, and the average of `quant` for the group `g2`, you would write:
 
 `SELECT cust, prod, quant.max, g1.quant.sum, g2.quant.avg`
+
+### Counting
+
+`count` answers two different questions, and which one it answers is decided by whether it names a column:
+
+| written | answers |
+|---|---|
+| `count` | how many rows this group holds |
+| `prod.count` | how many distinct products this group holds |
+| `g1.count` | how many rows group `g1` holds |
+| `g1.prod.count` | how many distinct products group `g1` holds |
+
+A row count names no column because no column bears on it. That is the whole reason the bare form exists: with only `column.count` to write, `SELECT cust, prod.count` had to borrow a column to count rows, and under a clause that groups automatically it reads as "the products, counted" while answering something else. Now the two questions have two spellings, and a column written in an aggregate always bears on the number that comes back.
+
+The other four functions are unchanged and always run over rows, not over distinct values. So `quant.sum` divided by `quant.count` is *not* `quant.avg`, the way it is in SQL: `avg` keeps its own definition, and the identity simply does not hold once `count` means something else.
+
+A blank cell is not a value, so it is skipped by a distinct count and by every other function, while a row count still counts its row. On a column that is blank everywhere, a distinct count has no value at all rather than zero, the same as any aggregate with nothing to compute.
+
+`count` is a reserved word where a grouping attribute would go: written on its own in [SELECT](#select) it is the row count even if the queried data has a column of that name, since the same query has to mean the same thing over every frame. Such a column is still reachable everywhere else, `count.count` and `WHERE count > 5` included.
 
 
 ## OVER
@@ -258,7 +278,7 @@ Quoting turns a reference back into text. `g1.prod = 'cust'` looks for the liter
 
 The HAVING clause determines which of the grouped rows will be included in the output based on aggregate values.
 
-Like in the [SELECT](#select) clause, aggregates can come in the form `column.function` or `group.column.function`. The HAVING clause is not limited to the aggregates defined in the SELECT clause. The only limitation is that they must be contain an aggregate function (`sum`, `avg`, `min`, `max`, `count`) and a column that contains numerical data (e.g. `quant` from the `sales` table) unless the aggregate function used is `count`. They can also contain a group defined in the `OVER` clause.
+Aggregates take the same four forms here as in the [SELECT](#select) clause, `count` and `g1.count` included, so `HAVING count > 100` keeps the groups with more than a hundred rows. The HAVING clause is not limited to the aggregates defined in the SELECT clause. The only limitation is that they must be contain an aggregate function (`sum`, `avg`, `min`, `max`, `count`) and a column that contains numerical data (e.g. `quant` from the `sales` table) unless the aggregate function used is `count`. They can also contain a group defined in the `OVER` clause.
 
 <!-- grammar:operators HAVING also:== -->
 HAVING clause conditions must include an aggregate followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to.
@@ -282,12 +302,12 @@ The following is also a valid HAVING clause, assuming the groups `g1` and `g2` a
 The ORDER BY clause determines the order of the rows in the outputted table. It takes a comma-separated list of [SELECT](#select) terms to sort by, outermost first. A term is a grouping attribute or an aggregate, and a `-` in front of it sorts that term descending:
 
 ```sh
-ORDER BY song                    -- alphabetically by song
-ORDER BY -position.count         -- most played first
-ORDER BY -position.count, song   -- most played first, ties broken alphabetically
+ORDER BY song           -- alphabetically by song
+ORDER BY -count         -- most played first
+ORDER BY -count, song   -- most played first, ties broken alphabetically
 ```
 
-Each term carries its own direction, so `ORDER BY -position.count, song` runs the count down and the song up.
+Each term carries its own direction, so `ORDER BY -count, song` runs the count down and the song up.
 
 A term must be something the query returns. This is stricter than SQL, where ORDER BY can name a column the query does not select, and grouping is why: a column that is neither a grouping attribute nor inside an aggregate has no single value in an output row to sort by. Naming one is a parsing error that lists the terms available.
 

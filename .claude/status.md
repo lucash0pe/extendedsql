@@ -216,9 +216,10 @@ clause gaining a rule upstream simply goes unreflected downstream.
 
 ## Stream H — language features
 
-H1 shipped; see the settled record. What it leaves open:
+**Closed 2026-07-30.** H1 (CONTAINS) shipped in v1.3.0, H2 was a rename in the design notes, H3
+(ORDER BY by name) in v1.13.0 and H4 (the two counts) in v1.15.0. What each one settled:
 
-- [ ] **H4. `count` should count rows bare, and count *distinct* on a column.** Filed from portfolio
+- [x] **H4. `count` should count rows bare, and count *distinct* on a column.** Filed from portfolio
   2026-07-29, from a visitor reading a result and being wrong about it in the way the syntax invites.
 
   **What happened.** `SELECT state, city.count` returns 11,963 for CA. That is the row count — CA has
@@ -264,6 +265,12 @@ H1 shipped; see the settled record. What it leaves open:
   rewrite all 13 curated examples, the walkthrough, `songs.structure.json` and every SQL equivalent
   the docs show side by side. Doing them separately means paying that twice, and `esql-smoke` catches
   a partial migration either way.
+
+  **The engine half shipped in v1.15.0**, both decisions taken as filed: `forms` grew the two bare
+  shapes and `any_dtype` narrowed to the column form. See that entry in the settled record. The
+  sequencing note stands for the *portfolio* half, which is where the 13 examples live: nothing
+  downstream has to move until it moves with D1, since a query written the old way still parses --
+  it just answers the distinct count now, which is the one thing to watch for in that migration.
 
 - [x] **H3. `ORDER BY` cannot sort by an aggregate.** Filed from portfolio 2026-07-29.
   `SELECT song, position.count ORDER BY position.count` raises `[ORDER_BY_CLAUSE] Invalid value`, and
@@ -508,7 +515,7 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `public/docs/syntax.md` section + an ESQL demo example. Pairs with HAS: HAS
   *filters* one grain by another; this *measures* across grains. Design captured now; build parked
   until the datasets/rename plumbing lands.
-- [ ] **mypy clean pass.** 157 errors (159 before v1.9.0, and recorded as 156 until v1.8.0; the count was
+- [ ] **mypy clean pass.** 152 errors (157 before v1.15.0, 159 before v1.9.0, and recorded as 156 until v1.8.0; the count was
   stale at 143 before that because `make typecheck` called
   `uv run mypy`, whose console script does not spawn, so the target errored out before reaching
   mypy; fixed in v1.5.0 to `uv run python -m mypy`, the form every other target uses). All from
@@ -1049,6 +1056,93 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   **Portfolio-side follow-up: none.** No export changed and no new name. Worth knowing that the
   reference cards portfolio renders are its own copy of this material, and this guard covers only
   the doc in this repo. The same marker idea is available there if its cards are ever worth binding.
+
+## v1.15.0 — `count` counts rows, `column.count` counts distinct (2026-07-30)
+
+- [x] **H4, which closes Stream H.** `SELECT state, count` is the row count, and `state.count` is now
+  the number of distinct states. Bumped `1.14.0 -> 1.15.0`; the gate is green at **423 tests**
+  (was 386).
+
+  ```sh
+  SELECT cust, count              -- how many rows this customer has
+  SELECT cust, prod.count         -- how many distinct products
+  SELECT cust, g1.count OVER g1 SUCH THAT g1.state = 'NY'   -- how many rows in the group
+  ```
+
+  **What was wrong was an answer, not an error**, which is the same shape as K3 and J4. `city.count`,
+  `song.count` and `position.count` all returned 11,963 for CA, the row count, because the column in
+  `X.count` carried no meaning except its nullness. Under a clause that groups automatically,
+  `city.count` reads as "the cities, counted" and CA has 61 of those. Nothing raised, and nothing
+  could: the query was answerable, just not the question the syntax spelled.
+
+  **The root cause was a missing spelling.** ESQL had no `COUNT(*)`, so every row count borrowed a
+  column, and dot-notation turned the borrowed name into an apparent meaning. Giving the row count a
+  form with no column removes the misleading one rather than documenting it: after this there is no
+  way to write a row count that names an irrelevant column, which is what made the migration worth
+  paying for.
+
+  Decisions worth keeping:
+
+  - **`count` is reserved in SELECT, above a column of the same name.** The alternative was to let
+    the frame decide, and then the same query means different things over different data. A column
+    called `count` stays reachable everywhere it cannot be confused with the function: `count.count`,
+    `count.sum`, `WHERE count > 5`, `ORDER BY count`. Only the bare word in a grouping-attribute slot
+    is spoken for, and only `count` -- a column named `sum` is still projectable, because the check
+    that refuses `SELECT cust, sum` runs *after* the word fails to name a column.
+  - **`g1.count` beats a column named `g1`.** Same tiebreak, decided the other way round from a
+    coin-flip: the group is declared by the query itself a few words earlier, in OVER, which makes it
+    the more deliberate of the two readings.
+  - **`sum / count` is no longer `avg`, and that is not a bug to fix.** It is a SQL identity, not a
+    law; with `count` defined as distinct it does not hold, and `avg` keeps its own definition over
+    rows. Pinned by a test so nobody restores it by "fixing" avg.
+  - **A distinct count skips blanks; a row count does not.** A missing value is not a value (SQL's
+    `COUNT(DISTINCT x)` agrees), while a blank cell makes a row no less of a row. A column that is
+    blank everywhere has *no* count rather than zero, the same as any aggregate with nothing to
+    compute.
+  - **Both bare forms are published literally**, as `count` and `group.count` in
+    `GRAMMAR["aggregates"]["forms"]`, rather than as a `function` pattern. Only `count` takes the
+    form, and a pattern would promise `sum` does too.
+  - **`any_dtype` narrowed rather than moved.** It answers "which functions may a non-numeric
+    *column* be given", and the bare form gives no column, so it sits outside the rule instead of
+    becoming an exception to it. The narrowing is published in `slot_kinds["aggregate"]`, since the
+    list itself is only a list of names.
+
+  **The accumulator was already the right shape to extend.** A count is now a set of distinct values
+  and an avg was already a running `{sum, count}`, so both are finished by one pass:
+  `convert_avg_in_data_map` became `finalize_data_map` and dispatches on the accumulator's *shape*
+  rather than a flag, which makes it idempotent -- converting an avg twice used to raise "'float'
+  object is not subscriptable". `_build_data_map` also stopped spelling out the same accumulators the
+  update path spells out, and feeds the first row through `update_data_map` like every other row.
+
+  **Validated against SQL, not just against itself.** Two new sqlite parity tests over `sales.csv`
+  pin the two counts to `COUNT(*)` and `COUNT(DISTINCT state)`, and they disagree on that data, so a
+  test agreeing with both would prove nothing. The three MF parity queries that used `count(quant)`
+  now say `count(distinct quant)`, which is what their ESQL side asks for. Covered by
+  `tests/execution/test_count.py` (27 tests) plus the grammar bindings.
+
+  **Verified the guards bite**, and two of them did not at first, which is the part worth recording.
+  Reverting the distinct count fails 9, un-reserving the bare word in SELECT fails 21, reading
+  `g1.count` as a column fails 7, and skipping a row that holds a blank fails 6. But **dropping a
+  bare form from `forms` passed**: the test that runs the forms is parametrized over the list, so
+  deleting an entry deletes its own test -- a shape worth watching for anywhere a published list
+  drives its own coverage. It is now bound to `BARE_AGGREGATE_FUNCTIONS`, which the parser reads, and
+  fails. **Idempotence passed too**, because nothing called the finalize pass twice; it has a unit
+  test now rather than a docstring claiming a property nothing exercised.
+
+  **Prose updated to match**, and the G2 guard fired on the way through, which is it working: the
+  aggregate-forms assertion failed the moment `GRAMMAR` grew `group.count` and `syntax.md` still said
+  "two forms". SELECT gained a **Counting** section with the table of four spellings, the reserved
+  word, the blank-cell rule and the `sum / count` note; HAVING says the bare form works there too;
+  ORDER BY's examples now sort by `-count` rather than by a borrowed `-position.count`. Every example
+  was run against the engine over `sales.csv`.
+
+  **Portfolio-side follow-up, required, and this is the migration H4 was filed with.** No new name in
+  `esql.__all__` and no new slot kind, so neither the export-diff guard nor `unhandledSlotKinds`
+  fires -- `grammar.json` simply carries four forms where it carried two. What does change is
+  *meaning*: all 13 curated examples borrow `position` for a row count and now answer the distinct
+  count instead. They still parse, so nothing fails loudly; `esql-smoke` compares against the SQL
+  equivalent and is what catches them. Land it with D1 as filed. The result table must also read
+  `forms` rather than looking for a dot, or a bare `count` column is filed as a dimension.
 
 ## 3. Engine-side prep for the ESQL demo
 
