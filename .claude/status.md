@@ -204,9 +204,13 @@ clause gaining a rule upstream simply goes unreflected downstream.
   `HAVING_OPERATORS` claim CONTAINS fails the test rather than reaching the demo. That kills the
   silent-drift failure mode, which was the point, without pretending the description is generated.
 
-- [ ] **G2. A guard for the prose.** The clause reference cards are hand-written and only the keyword
+- [x] **G2. A guard for the prose.** The clause reference cards are hand-written and only the keyword
   list is asserted today. G1 gives the cards something to be checked against: they can now be
   generated from `GRAMMAR` or asserted to agree with it.
+
+  **Shipped in v1.14.0**, asserted rather than generated. See that entry in the settled record. With
+  it, Stream G closes: `slot_kinds`/`accepts`, the operator dtype axis and the prose that restates
+  them are all bound to the parser.
 
 ---
 
@@ -1005,6 +1009,46 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   new slot kind and `ORDER BY`'s `accepts` grew, which is exactly the channel Stream G built for this.
   Its caret menu can now offer something in ORDER BY for the first time: the SELECT terms of the query
   in hand, which is a list it already has. `ORDER BY`'s `separator` also changed from `null` to `","`.
+
+## v1.14.0 — the prose is bound to the grammar (2026-07-30)
+
+- [x] **G2, which closes Stream G.** `tests/test_syntax_docs.py` asserts `public/docs/syntax.md`
+  against `GRAMMAR` and the parser's token sets. Bumped `1.13.0 -> 1.14.0`; the gate is green at
+  **386 tests** (was 376).
+
+  **Asserted, not generated.** Generating the doc from `GRAMMAR` was the other option G2 named and
+  would have meant a build step for a document whose value is the half no export can hold: what a
+  clause is *for*, why `HAS` is not a comparison, what an entry value is doing. So the doc stays
+  hand-written and prose stays unchecked; only the parts that *restate a rule* are bound.
+
+  **A claim is marked as one.** `<!-- grammar:operators WHERE also:==,HAS -->` in front of a
+  paragraph says the operators named there are WHERE's operators, and `also:` names the ones written
+  elsewhere in the section. Six markers: keywords, aggregate functions, the three clause operator
+  lists, the operator-dtype table, and the text delimiters. Unmarked prose is not checked, because a
+  regex over English produces false positives and a gate that cries wolf gets bypassed.
+
+  **The loose version of this test does not work, and writing it proved that.** The first cut asked
+  "does every legal operator appear somewhere in the clause's section", both directions covered by
+  one cheap check. Tampering found it passes when HAVING gains the `HAS` operator, because HAVING's
+  section *does* mention `HAS` -- in a sentence saying it is rejected. A mention that says the
+  opposite still counts as a mention. That is why the marker carries the whole claim now: the list
+  plus its `also:` set must equal the clause's operators exactly, and each `also:` name still has to
+  be found in the section. Worth recording because the loose check is the one that looks sufficient.
+
+  **What the doc got to say for itself.** Two places disagreed with the parser only in vocabulary,
+  not in substance: the doc writes "text" where the engine's dtype family is "string". That is a
+  rename declared in one dict in the test rather than a change to either side, since "text column"
+  is the right words for a reader and `string` is the right key for a host.
+
+  Verified the guards bite, seven ways: documenting CONTAINS in HAVING, HAVING gaining an operator
+  nobody documents, WHERE losing one the doc still promises, an `also:` name written nowhere, a
+  wrong cell in the dtype table, a deleted marker, and a new aggregate function shipping
+  undocumented. Each fails, and the deleted-marker case is the one that matters most: a claim cannot
+  go unguarded by quietly removing its marker.
+
+  **Portfolio-side follow-up: none.** No export changed and no new name. Worth knowing that the
+  reference cards portfolio renders are its own copy of this material, and this guard covers only
+  the doc in this repo. The same marker idea is available there if its cards are ever worth binding.
 
 ## 3. Engine-side prep for the ESQL demo
 

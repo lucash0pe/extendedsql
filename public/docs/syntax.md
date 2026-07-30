@@ -38,7 +38,8 @@ HAVING [aggregate conditions]
 ORDER BY [variable order]
 ```
 
-The query language has 6 keywords: SELECT, OVER, WHERE, SUCH THAT, HAVING, and ORDER BY. The follpowing sections explore the the syntax and use cases of each keyword. ESQL queries do not contain a FROM clause like in SQL since a datatable must be passed in through the DataFrame accessor or through the API. Queries do not require all of the keywords, but variable projection (in the [SELECT](#select) clause) must be performed for the query to produce an output.
+<!-- grammar:keywords -->
+The query language has 6 keywords: `SELECT`, `OVER`, `WHERE`, `SUCH THAT`, `HAVING`, and `ORDER BY`. The follpowing sections explore the the syntax and use cases of each keyword. ESQL queries do not contain a FROM clause like in SQL since a datatable must be passed in through the DataFrame accessor or through the API. Queries do not require all of the keywords, but variable projection (in the [SELECT](#select) clause) must be performed for the query to produce an output.
 
 ### Case
 
@@ -51,6 +52,7 @@ A result is labelled with the *canonical* spelling rather than the query's, so t
 
 ### Text values
 
+<!-- grammar:text-delimiters -->
 A text value is written between a matched pair of `'` or `"`. Either delimiter holds the other as ordinary text, so a value containing an apostrophe is usually easiest to write in double quotes:
 
 ```sh
@@ -83,6 +85,7 @@ The SELECT clause determines the output columns of the query. It contains two ty
 
 Grouping attrubutes are the column names of the datatable that is being queried. It is important to know that ESQL will automatically group these variables (like GROUP BY in SQL), so all rows that contain the same combination of values in the grouping attributes will be in the same row in the output.
 
+<!-- grammar:aggregate-functions -->
 Aggregates are what will be calculated for each combination of grouping attributes. Aggregates must always contain an aggregate function supported by ESQL (`sum`, `avg`, `min`, `max`, `count`) and a column that contains numerical data (e.g. `quant` from the `sales` table) unless the aggregate function is `count`, which works with columns that contain any datatype.  Aggregates can be apart of a group defined in the [OVER](#over) clause. ESQL syntax exclusively utilizes dot notation with groups first, then the column name, and the aggregate function last. Therefore, aggregates can come in two forms: `column.function` or `group.column.function`.
 
 If you wanted to write a query with the grouping attributes `cust` and `prod` that computes the maximum value of `quant`, the sum of `quant` for the group `g1`, and the average of `quant` for the group `g2`, you would write:
@@ -107,11 +110,14 @@ The following would also be a valid OVER clause:
 
 The WHERE clause determines which rows will be filtered out of the inputted datatable before computing any aggregates. The resulting table will be used to compute any global aggregates.
 
+<!-- grammar:operators WHERE also:==,HAS -->
 WHERE clause conditions can include any column in the inputted datatable followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`, `CONTAINS`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing. 
 
 ### Which operators apply to which columns
 
 Not every operator applies to every column. Equality works on all four kinds of column, ordering needs values with an order, and `CONTAINS` needs text:
+
+<!-- grammar:operator-dtypes -->
 
 | column | `=` `!=` | `>` `>=` `<` `<=` | `CONTAINS` |
 |---|---|---|---|
@@ -189,6 +195,7 @@ Four rules to know:
 ## SUCH THAT
 The SUCH THAT clause determines which of the remaining rows will be used to compute aggregates within a group. The SUCH THAT clause should contain a section for each defined group in the [OVER](#over) clause. These sections must be divided by commas, must contain only one group, and must not contain a group that is already defined in another section of the SUCH THAT clause.
 
+<!-- grammar:operators SUCH THAT also:== -->
 SUCH THAT clause conditions can include any column in the inputted datatable but every column name must start with the group name of the section combined using dot notation (e.g. `group1.month`). The group and column is followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`, `CONTAINS`) and the value that you want to compare to. The comparison value should be the same datatype as the column you are referencing. [Which operators apply to which columns](#which-operators-apply-to-which-columns) governs here exactly as it does in WHERE.
 
 Conditions can be combined with `AND` and `OR`. The `NOT` operator can also be used for negation. 
@@ -253,7 +260,10 @@ The HAVING clause determines which of the grouped rows will be included in the o
 
 Like in the [SELECT](#select) clause, aggregates can come in the form `column.function` or `group.column.function`. The HAVING clause is not limited to the aggregates defined in the SELECT clause. The only limitation is that they must be contain an aggregate function (`sum`, `avg`, `min`, `max`, `count`) and a column that contains numerical data (e.g. `quant` from the `sales` table) unless the aggregate function used is `count`. They can also contain a group defined in the `OVER` clause.
 
-HAVING clause conditions must include an aggregate followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to. The comparison value must be numeric, as all aggregates are computed numeric values. For that reason [`CONTAINS`](#contains) is the one conditional operator HAVING does not accept, and [`HAS`](#has) is rejected too, since it filters rows rather than groups. 
+<!-- grammar:operators HAVING also:== -->
+HAVING clause conditions must include an aggregate followed by a conditional operator (`>`, `<`, `=`, `>=`, `<=`, `!=`) and the value that you want to compare to.
+
+The comparison value must be numeric, as all aggregates are computed numeric values. For that reason [`CONTAINS`](#contains) is the one conditional operator HAVING does not accept, and [`HAS`](#has) is rejected too, since it filters rows rather than groups. 
 
 Conditions can be combined with `AND` and `OR`. The `NOT` operator can be used for negation. 
 
