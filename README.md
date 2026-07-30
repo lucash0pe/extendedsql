@@ -94,6 +94,13 @@ from esql import ESQLAccessor
 new_df = df.esql.query("SELECT cust, prod, quant.avg")
 ```
 
+Queries are not case sensitive, and neither is matching a name in the query against a column of your
+frame, so a frame whose columns are `Cust` and `Quant` takes `SELECT Cust, Quant.avg` and
+`SELECT cust, quant.avg` alike. The result is labelled with your frame's spelling rather than the
+query's, so the column names you get back do not depend on how the query was typed. A text value is
+the exception and stays case sensitive, because its contents are data: see
+[Case](public/docs/syntax.md#case).
+
 Aggregates are rounded to 2 decimal places by default. You can change this by passing a different value to the query as `decimal_places`.
 
 ```python
@@ -124,8 +131,9 @@ except ParsingError as e:
 Parsing is the cheap half of a query — microseconds against tens of milliseconds — so this is
 usable for live feedback while someone is still typing. `token` is what lets an editor point at the
 mistake rather than only name the clause. It is a fragment and not a character offset because the
-parser runs on a lowercased, whitespace-collapsed copy of the query, so offsets into it do not map
-back onto what was typed; match it case-insensitively.
+parser runs on a whitespace-collapsed copy of the query, so offsets into it do not map back onto
+what was typed. The fragment itself is spelled exactly as the query spelled it, so a literal match
+finds it.
 
 The token sets the parser accepts are exported for the same reason: `esql.KEYWORDS`,
 `esql.AGGREGATE_FUNCTIONS`, `esql.CONDITIONAL_OPERATORS` and `esql.SEMI_JOIN_OPERATOR`. Anything

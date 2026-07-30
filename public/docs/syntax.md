@@ -38,7 +38,14 @@ ORDER BY [variable order]
 
 The query language has 6 keywords: SELECT, OVER, WHERE, SUCH THAT, HAVING, and ORDER BY. The follpowing sections explore the the syntax and use cases of each keyword. ESQL queries do not contain a FROM clause like in SQL since a datatable must be passed in through the DataFrame accessor or through the API. Queries do not require all of the keywords, but variable projection (in the [SELECT](#select) clause) must be performed for the query to produce an output.
 
-ESQL is not case sensitive, including the keywords. Only string comparison in the WHERE and SUCH THAT clauses are case sensitive. The exception is [`CONTAINS`](#where), which is deliberately case insensitive. 
+### Case
+
+ESQL is not case sensitive. Keywords, operators, column names, group names and aggregate functions can be written in any case, so `SELECT Cust, QUANT.SUM` and `select cust, quant.sum` are the same query. A column name is matched against the DataFrame's columns without regard to case, so a frame whose columns are `Cust` and `Quant` is queryable however you spell them.
+
+What is case sensitive is a **text value**, because its contents are data rather than a spelling: `WHERE prod = 'Ham'` and `WHERE prod = 'HAM'` are different filters. The exception is [`CONTAINS`](#where), which is deliberately case insensitive.
+
+A result is labelled with the *canonical* spelling rather than the query's, so the same query returns the same column names whatever case it was typed in: a column as the DataFrame spells it, a group as the [OVER](#over) clause declared it, and an aggregate function in lower case. `SELECT CUST, QUANT.SUM` over a frame with a `Cust` column returns columns `Cust` and `Quant.sum`.
+
 
 ### Text values
 
@@ -83,7 +90,7 @@ If you wanted to write a query with the grouping attributes `cust` and `prod` th
 
 ## OVER
 
-The OVER clause determines the names of the groups that are used to compute aggregates within the conditions set in the [SUCH THAT](#such-that) clause. The groups names are separated by commans. Group names can only include letters, numbers, and `_`, and they are not case sensitive. It is recommended that group names are short and concise.
+The OVER clause determines the names of the groups that are used to compute aggregates within the conditions set in the [SUCH THAT](#such-that) clause. The groups names are separated by commans. Group names can only include letters, numbers, and `_`, and they are not case sensitive: `OVER G1` can be referenced as `g1` anywhere below. Because they are not case sensitive, two names differing only in case would name the same group and are rejected. It is recommended that group names are short and concise.
 
 If you want to define two groups with the names `g1` and `g2`, like in the SELECT clause example above, you would write:
 

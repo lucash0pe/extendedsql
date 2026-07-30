@@ -43,12 +43,16 @@ def test_validate_reports_the_offending_token(sales_test_data, query, error_type
     assert excinfo.value.token == token
 
 
-def test_token_matches_the_query_case_insensitively(sales_test_data):
-    """The parser lowercases outside quotes, so the token comes back lowered — an editor looking
-    for it in what the user actually typed has to fold case."""
+def test_token_is_spelled_as_the_query_spelled_it(sales_test_data):
+    """The token comes back exactly as written, so an editor can find it in what the user typed.
+
+    It used to come back lowercased, because the parser ran on a lowercased copy of the query. That
+    is the same fold that made a mixed-case column unreachable (K1); now that it is gone, a token
+    matches literally rather than only case-insensitively.
+    """
     with pytest.raises(ParsingError) as excinfo:
         sales_test_data.esql.validate("SELECT cust, QUANTT.avg")
-    assert excinfo.value.token == "quantt.avg"
+    assert excinfo.value.token == "QUANTT.avg"
 
 
 def test_group_prefixed_aggregate_without_over_is_a_parsing_error(sales_test_data):
