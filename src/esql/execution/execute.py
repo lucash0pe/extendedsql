@@ -28,7 +28,6 @@ def execute(parsed_query: ParsedQuery, decimal_places: int) -> pd.DataFrame:
     ordered_table = algorithms.order_by_sort(
         projected_table=projected_table,
         order_by=parsed_query["order_by"],
-        grouping_attributes=parsed_query["select"]["grouping_attributes"],
     )
 
     return pd.DataFrame(ordered_table)

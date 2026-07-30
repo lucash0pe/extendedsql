@@ -87,7 +87,8 @@ def _build_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:
 
     order_by_clause = parse_order_by_clause(
         order_by_clause=keyword_clauses["ORDER BY"],
-        number_of_select_grouping_attributes=len(parsed_select_clause["grouping_attributes"]),
+        grouping_attributes=parsed_select_clause["grouping_attributes"],
+        select_items_in_order=parsed_select_clause["select_items_in_order"],
     )
 
     return ParsedQuery(

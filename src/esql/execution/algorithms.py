@@ -11,6 +11,7 @@ from esql.parser.types import (
     ParsedSelectClause,
     ParsedSuchThatClause,
     ParsedWhereClause,
+    SortTerm,
     aggregate_key,
 )
 from esql.parser.util import find_group_in_such_that_section
@@ -403,17 +404,21 @@ def _sort_key(value):
 
 
 def order_by_sort(
-    projected_table: list[dict[str, str | int | bool | date]], order_by: int, grouping_attributes: list[str]
+    projected_table: list[dict[str, str | int | bool | date]], order_by: list[SortTerm]
 ) -> list[dict[str, str | int | bool | date]]:
-    if order_by > 0:
-        grouping_attribute_sort_keys = tuple(grouping_attributes[:order_by])
+    """Sort the projected rows by each term, outermost first.
+
+    One pass per term, applied from the innermost key outwards, which is the standard way to get a
+    multi-key sort where the keys run in different directions: Python's sort is stable, so each pass
+    keeps the order the previous ones established among rows it considers equal. A single tuple key
+    cannot do that, because `reverse` there flips every key at once.
+
+    A term is a projected label, so an aggregate sorts exactly like a grouping attribute -- by the
+    time the rows reach here the difference has already been projected away.
+    """
+    for sort_term in reversed(order_by):
         projected_table.sort(
-            key=lambda row: tuple(_sort_key(row.get(attribute)) for attribute in grouping_attribute_sort_keys)
-        )
-    elif order_by < 0:
-        grouping_attribute_sort_keys = tuple(grouping_attributes[: abs(order_by)])
-        projected_table.sort(
-            key=lambda row: tuple(_sort_key(row.get(attribute)) for attribute in grouping_attribute_sort_keys),
-            reverse=True,
+            key=lambda row, term=sort_term["term"]: _sort_key(row.get(term)),
+            reverse=sort_term["descending"],
         )
     return projected_table

@@ -169,9 +169,33 @@ def test_clause_order_follows_the_described_keyword_order(data: pd.DataFrame):
         data.esql.validate("SELECT cust, quant.sum HAVING quant.sum > 0 WHERE quant > 0")
 
 
-@pytest.mark.parametrize("clause", ["SELECT", "OVER", "SUCH THAT"])
+@pytest.mark.parametrize("clause", ["SELECT", "OVER", "SUCH THAT", "ORDER BY"])
 def test_comma_separated_clauses_are_described_as_such(clause: str):
     assert GRAMMAR["clauses"][clause]["separator"] == ","
+
+
+def test_order_by_accepts_both_described_slot_kinds(data: pd.DataFrame):
+    """The two spellings the grammar declares, each run through the parser."""
+    assert GRAMMAR["clauses"]["ORDER BY"]["accepts"] == ["sort_term", "grouping_attribute_index"]
+    data.esql.validate("SELECT cust, quant.sum ORDER BY -quant.sum, cust")  # sort_term
+    data.esql.validate("SELECT cust, quant.sum ORDER BY 1")  # grouping_attribute_index
+
+
+def test_a_sort_term_must_be_projected_as_described(data: pd.DataFrame):
+    assert "must be one the query projects" in GRAMMAR["slot_kinds"]["sort_term"]
+    # `prod` is a column of the frame, but this query does not return it.
+    with pytest.raises(ParsingError, match="is not a SELECT term"):
+        data.esql.validate("SELECT cust, quant.sum ORDER BY prod")
+
+
+def test_the_index_counts_grouping_attributes_not_select_terms_as_described(data: pd.DataFrame):
+    """The number is bounded by the grouping attributes alone, which is exactly why it cannot reach
+    an aggregate: `SELECT cust, quant.sum` has one attribute, so `2` is out of range rather than
+    naming the aggregate."""
+    assert "not the Nth" in GRAMMAR["slot_kinds"]["grouping_attribute_index"]
+    data.esql.validate("SELECT cust, quant.sum ORDER BY 1")
+    with pytest.raises(ParsingError, match="out of range"):
+        data.esql.validate("SELECT cust, quant.sum ORDER BY 2")
 
 
 def test_repeating_a_group_across_such_that_sections_is_rejected(data: pd.DataFrame):

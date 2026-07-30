@@ -261,7 +261,7 @@ H1 shipped; see the settled record. What it leaves open:
   the docs show side by side. Doing them separately means paying that twice, and `esql-smoke` catches
   a partial migration either way.
 
-- [ ] **H3. `ORDER BY` cannot sort by an aggregate.** Filed from portfolio 2026-07-29.
+- [x] **H3. `ORDER BY` cannot sort by an aggregate.** Filed from portfolio 2026-07-29.
   `SELECT song, position.count ORDER BY position.count` raises `[ORDER_BY_CLAUSE] Invalid value`, and
   `ORDER BY 2` raises "out of range of the 1 grouping attributes" — confirming the index counts only
   SELECT's plain columns, so an aggregate is unreachable by either spelling.
@@ -275,6 +275,11 @@ H1 shipped; see the settled record. What it leaves open:
   Whether it extends the index to cover SELECT's full term list or takes the aggregate by name is
   this repo's call; the grammar's `grouping_attribute_index` slot kind would need to change either
   way, which makes it a `slot_kinds`/`accepts` change and therefore visible downstream by design.
+
+  **Shipped in v1.13.0**, by name. The choice was forced rather than preferred: `ORDER BY n` sorts by
+  the *first n* grouping attributes, not the nth, so an index extended over SELECT's full term list
+  still always begins at the first grouping attribute and can never sort by an aggregate alone. The
+  filing offered the two as alternatives; only one of them works. See that entry in the settled record.
 
 - [x] **H2. Rename the unbuilt semi-join.** `CONTAINS` now names the substring operator H1 shipped,
   so the grain-bridging semi-join in the settled record below could not keep that name. Decided
@@ -944,6 +949,62 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   **Portfolio-side follow-up: none, but worth a look at the curated examples.** No export changed.
   Any query spelling a boolean as `= 1` or comparing a date against non-date text would now be a
   parsing error rather than a quiet result, and `esql-smoke` catches it if one exists.
+
+## v1.13.0 — ORDER BY takes named terms, aggregates included (2026-07-30)
+
+- [x] **H3.** `SELECT song, position.count ORDER BY -position.count` answers "which did they play
+  most", which the language could not express at all. Bumped `1.12.0 -> 1.13.0`; the gate is green at
+  **376 tests** (was 348).
+
+  ```sh
+  ORDER BY song                    -- alphabetically
+  ORDER BY -position.count         -- most played first
+  ORDER BY -position.count, song   -- most played first, ties broken alphabetically
+  ORDER BY 2                       -- unchanged: the first two grouping attributes
+  ```
+
+  **The filing offered two options and only one of them works.** It asked whether to extend the index
+  over SELECT's full term list or take the aggregate by name. `ORDER BY n` does not mean "the nth
+  attribute", it means "**the first n** attributes, in order" -- so an extended index still always
+  begins at the first grouping attribute, and `SELECT song, position.count ORDER BY 2` would sort by
+  song and then by the count, never by the count alone. The motivating query stays unreachable under
+  that option however far the number is widened. Found by reading `order_by_sort`, not by assuming
+  the index meant what an index usually means.
+
+  **The integer stays, as sugar over the general form.** `ORDER BY 2` parses into the same
+  `list[SortTerm]` the term list produces, so there is one thing to sort by and one place that knows
+  what descending means. Nothing downstream knows there are two spellings, all 13 curated examples
+  keep working, and the migration H4 will pay for anyway does not have to be paid twice.
+
+  **`-` for descending rather than `DESC`.** ESQL already spelled descending with a sign
+  (`ORDER BY -2`), so this adds no keyword and leaves one way to say it. `ASC`/`DESC` was the
+  alternative and was declined for that reason: it would have left `-2` as a second, inconsistent
+  spelling of the same thing.
+
+  **A term must be projected.** Stricter than SQL, which can order by a column it does not return,
+  and forced by grouping: a column that is neither grouped on nor aggregated has no single value in
+  an output row. The refusal lists the terms that were available, since the answer is already in the
+  query.
+
+  **One sort pass per term, innermost first,** rather than one pass over a tuple key. Python's sort
+  is stable, so each pass preserves what the previous ones established, and that is what lets each
+  term carry its own direction -- `reverse` on a tuple key flips every key at once, so
+  `-position.count, song` is not expressible that way.
+
+  **Also corrected: `grouping_attribute_index`'s published description was wrong.** It said "a
+  1-based index into the SELECT grouping attributes", which is what the name suggests and not what
+  the parser does. Same shape as J5: a `slot_kinds` string that nothing bound to behavior. It now
+  says first-N rather than Nth, and `test_the_index_counts_grouping_attributes_not_select_terms_as_described`
+  binds it.
+
+  Covered by `tests/execution/test_order_by_terms.py` (21 tests) through the public accessor.
+  Verified the guards bite: applying the keys outermost-first fails 6, using one direction for every
+  key fails 2, accepting any word as a term fails 6, and ignoring the minus sign fails 9.
+
+  **Portfolio-side follow-up: the `unhandledSlotKinds` check will fire, by design.** `sort_term` is a
+  new slot kind and `ORDER BY`'s `accepts` grew, which is exactly the channel Stream G built for this.
+  Its caret menu can now offer something in ORDER BY for the first time: the SELECT terms of the query
+  in hand, which is a list it already has. `ORDER BY`'s `separator` also changed from `null` to `","`.
 
 ## 3. Engine-side prep for the ESQL demo
 
