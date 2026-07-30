@@ -3,7 +3,7 @@
 Before this, ORDER BY took one number meaning "the first N grouping attributes", so the second half
 of the first question anyone asks of a dataset -- having counted something, sort by the count --
 could not be written at all. Widening the number would not have fixed it: the sort it describes
-always starts at the first grouping attribute, so `SELECT song, song.count ORDER BY 2` would sort by
+always starts at the first grouping attribute, so `SELECT song, count ORDER BY 2` would sort by
 song and then by the count, never by the count alone.
 
 These go through the public accessor, since the point is what a query can now express.
@@ -40,27 +40,27 @@ def _rows(result: pd.DataFrame, column: str = "song") -> list:
 ###############################################################################
 def test_sorting_by_an_aggregate_descending(plays: pd.DataFrame):
     """"Which did they play most" -- the query H3 was filed for."""
-    result = plays.esql.query("SELECT song, seconds.count ORDER BY -seconds.count")
+    result = plays.esql.query("SELECT song, count ORDER BY -count")
     assert _rows(result)[0] == "Truckin"
-    assert list(result["seconds.count"]) == [3, 2, 2]
+    assert list(result["count"]) == [3, 2, 2]
 
 
 def test_sorting_by_an_aggregate_ascending(plays: pd.DataFrame):
-    result = plays.esql.query("SELECT song, seconds.count ORDER BY seconds.count")
-    assert list(result["seconds.count"]) == [2, 2, 3]
+    result = plays.esql.query("SELECT song, count ORDER BY count")
+    assert list(result["count"]) == [2, 2, 3]
 
 
 def test_a_second_term_breaks_the_tie(plays: pd.DataFrame):
     """Two songs have 2 plays each, so the count alone does not determine the order and `song` does."""
-    result = plays.esql.query("SELECT song, seconds.count ORDER BY -seconds.count, song")
+    result = plays.esql.query("SELECT song, count ORDER BY -count, song")
     assert _rows(result) == ["Truckin", "Dark Star", "Sugaree"]
 
 
 def test_each_term_carries_its_own_direction(plays: pd.DataFrame):
     """The count descending, the tie broken descending: the pair a single reversed sort cannot make,
     since one `reverse` flips every key at once."""
-    ascending_name = plays.esql.query("SELECT song, seconds.count ORDER BY -seconds.count, song")
-    descending_name = plays.esql.query("SELECT song, seconds.count ORDER BY -seconds.count, -song")
+    ascending_name = plays.esql.query("SELECT song, count ORDER BY -count, song")
+    descending_name = plays.esql.query("SELECT song, count ORDER BY -count, -song")
     assert _rows(ascending_name) == ["Truckin", "Dark Star", "Sugaree"]
     assert _rows(descending_name) == ["Truckin", "Sugaree", "Dark Star"]
 

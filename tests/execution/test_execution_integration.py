@@ -122,13 +122,40 @@ def test_gt_date_where_query(sales_test_data: pd.DataFrame):
 @pytest.mark.timeout(5)
 def test_eq_date_where_query(sales_test_data: pd.DataFrame):
     sql = """
-        select cust,prod, count(month) from sales
+        select cust,prod, count(distinct month) from sales
         where date = '2020-04-13'
         group by cust, prod
     """
     esql = """
         SELECT cust, prod, month.count
         where date = '2020-4-13'
+    """
+    _test_query(sql, esql, data=sales_test_data)
+
+
+@pytest.mark.timeout(5)
+def test_row_count_query(sales_test_data: pd.DataFrame):
+    # H4's two counts against the two SQL spells them with. A bare `count` is COUNT(*), which is
+    # what ESQL had no way to write before, and it differs from the distinct count below on this
+    # data -- so a test that agreed with both would be proving nothing.
+    sql = """
+        select cust, prod, count(*) from sales
+        group by cust, prod
+    """
+    esql = """
+        SELECT cust, prod, count
+    """
+    _test_query(sql, esql, data=sales_test_data)
+
+
+@pytest.mark.timeout(5)
+def test_distinct_count_query(sales_test_data: pd.DataFrame):
+    sql = """
+        select cust, prod, count(distinct state) from sales
+        group by cust, prod
+    """
+    esql = """
+        SELECT cust, prod, state.count
     """
     _test_query(sql, esql, data=sales_test_data)
 
@@ -257,19 +284,19 @@ def test_mf_query_with_where(sales_test_data: pd.DataFrame):
             GROUP BY cust, prod
         ),
         old AS (
-            SELECT cust, prod , sum(quant) as sum, count(quant) as count
+            SELECT cust, prod , sum(quant) as sum, count(distinct quant) as count
             FROM sales
             WHERE date < '2017-01-01' and credit = true
             GROUP BY cust, prod
         ),
         newer AS (
-            SELECT cust, prod, sum(quant) as sum, count(quant) as count
+            SELECT cust, prod, sum(quant) as sum, count(distinct quant) as count
             FROM sales
             WHERE date >= '2017-01-01' and date < '2018-12-31' and credit = true
             GROUP BY cust, prod
         ),
         new AS (
-            SELECT cust, prod , sum(quant) as sum, count(quant) as count
+            SELECT cust, prod , sum(quant) as sum, count(distinct quant) as count
             FROM sales
             WHERE date >= '2018-12-31' and credit = true
             GROUP BY cust, prod

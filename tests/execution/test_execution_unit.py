@@ -195,6 +195,34 @@ def test_order_by_sort_with_numeric_attribute():
     )
 
 
+def test_finalizing_twice_leaves_the_same_values():
+    """`finalize_data_map` dispatches on the accumulator's shape rather than on a flag, which is what
+    makes a second pass a no-op. The flagged version raised "'float' object is not subscriptable" on
+    an avg converted twice, which is how BUG-8's duplicate aggregate showed up."""
+    aggregates: AggregatesDict = {
+        "global_scope": [
+            {"column": "quant", "function": "avg"},
+            {"column": "quant", "function": "count"},
+            {"column": None, "function": "count"},
+        ],
+        "group_specific": [],
+    }
+    row = GroupedRow(
+        grouping_attributes=["cust"],
+        aggregates=aggregates,
+        initial_row=["Alice", 10.0],
+        column_indices={"cust": 0, "quant": 1},
+    )
+    row.update_data_map(aggregates["global_scope"][0], ["Alice", 20.0])
+    row.finalize_data_map()
+    finalized = dict(row.data_map)
+    row.finalize_data_map()
+    assert row.data_map == finalized
+    assert finalized["quant.avg"] == 15
+    assert finalized["quant.count"] == 1
+    assert finalized["count"] == 1
+
+
 def test_projection_rounds_correctly():
     grouping_attributes = ["cust", "prod"]
     column_indices = {"cust": 0, "prod": 1, "quant1": 2, "quant2": 3}
@@ -214,6 +242,9 @@ def test_projection_rounds_correctly():
         initial_row=initial_row,
         column_indices=column_indices,
     )
+    # As `build_grouped_table` does before projecting: a count is a set of distinct values and an
+    # avg a running {sum, count} until this pass turns each into the number the query asked for.
+    row.finalize_data_map()
     table = [row]
     parsed_select_clause = ParsedSelectClause(
         grouping_attributes=grouping_attributes,

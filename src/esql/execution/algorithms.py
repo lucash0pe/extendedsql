@@ -93,7 +93,7 @@ def build_grouped_table(
 
     grouped_table = list(grouped_rows.values())
     for grouped_row in grouped_table:
-        grouped_row.convert_avg_in_data_map()
+        grouped_row.finalize_data_map()
 
     if parsed_having_clause:
         grouped_table = [

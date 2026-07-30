@@ -41,13 +41,35 @@ from esql.parser.types import (
 # The six clause keywords, in the order a query must write them.
 KEYWORDS = ("SELECT", "OVER", "WHERE", "SUCH THAT", "HAVING", "ORDER BY")
 
-# The aggregate functions valid in `column.function` / `group.column.function`.
+# The aggregate functions, valid in whichever of `AGGREGATE_FORMS` below admits them.
 AGGREGATE_FUNCTIONS = ("sum", "avg", "min", "max", "count")
 
-# `count` asks how many rows, not what they hold, so it is the one function that works on any
-# dtype. `_parse_aggregate` reads this rather than naming `count` itself.
+# `column.count` asks how many distinct values a column holds, not what they are, so it is the one
+# function that works on any dtype. `_parse_aggregate` reads this rather than naming `count` itself.
 DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS = ("count",)
+
+# The functions that may be written bare, with no column: `count` on its own is the group's row
+# count, and `g1.count` is group `g1`'s. This is a different rule from the one above, which happens
+# to name the same function: that one is about which dtypes a column takes, this one about needing
+# no column at all. Nothing else can be written this way, because every other function has to be
+# told what to add up.
+#
+# It exists because the alternative was worse. Without a bare form, a row count had to borrow a
+# column (`city.count`), and under a clause that auto-groups that reads as "the cities, counted"
+# while returning the row count -- a wrong answer the syntax invites. See `.claude/status.md`, H4.
+BARE_AGGREGATE_FUNCTIONS = ("count",)
 NUMERIC_AGGREGATE_FUNCTIONS = tuple(f for f in AGGREGATE_FUNCTIONS if f not in DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS)
+
+# Every way an aggregate can be spelled, in the order `_parse_aggregate` tries them. The bare forms
+# are written out literally rather than as `function`, because only the functions above take one and
+# a pattern would promise `sum` works that way too. `GRAMMAR` publishes this list, and a host reading
+# it decides whether a projected label is a measure by matching against these shapes.
+AGGREGATE_FORMS = (
+    *BARE_AGGREGATE_FUNCTIONS,
+    *(f"group.{function}" for function in BARE_AGGREGATE_FUNCTIONS),
+    "column.function",
+    "group.column.function",
+)
 
 # Comparison operators valid in a condition. `==` is read as `=`.
 CONDITIONAL_OPERATORS = ("CONTAINS", ">=", "<=", "!=", "==", ">", "<", "=")
@@ -286,7 +308,12 @@ def parse_select_clause(
     aggregates = AggregatesDict(global_scope=[], group_specific=[])
 
     for item in (s.strip() for s in select_clause.split(",")):
-        if "." in item:
+        # A dot means an aggregate, and so does a bare `count`. The bare form is read as the row
+        # count even when the frame has a column of that name, which makes `count` a reserved word
+        # in this position: the reading has to be the same for every frame, or the same query would
+        # mean different things over different data. Such a column is still reachable everywhere
+        # else, `count.count` and `WHERE count > 5` included.
+        if "." in item or item.lower() in BARE_AGGREGATE_FUNCTIONS:
             aggregate_result = _parse_aggregate(
                 aggregate=item, groups=groups, column_dtypes=column_dtypes, error_type=ParsingErrorType.SELECT_CLAUSE
             )
@@ -300,6 +327,12 @@ def parse_select_clause(
         else:
             column = _resolve_column(item, column_dtypes, ParsingErrorType.SELECT_CLAUSE)
             if column is None:
+                # `SELECT cust, sum` is a function missing its column rather than a misspelled
+                # column, and only one of those two mistakes is worth pointing at. `count` never
+                # reaches here, so this call always raises. Checked *after* resolution, which is
+                # what keeps a column named `sum` projectable while `count` stays reserved.
+                if item.lower() in AGGREGATE_FUNCTIONS:
+                    _bare_function(item, item, ParsingErrorType.SELECT_CLAUSE)
                 raise ParsingError(ParsingErrorType.SELECT_CLAUSE, f"Invalid column: '{item}'", token=item)
             grouping_attributes.append(column)
             select_items_in_order.append(column)
@@ -769,51 +802,107 @@ def _parse_aggregate(
     column_dtypes: dict[str, np.dtype],
     error_type: ParsingErrorType,
 ) -> GlobalAggregate | GroupAggregate:
+    """Read one aggregate in any of its four forms.
+
+    `count` and `group.count` name no column: they are the row count, and the function has to be one
+    of `BARE_AGGREGATE_FUNCTIONS`. `column.function` and `group.column.function` name one, and it has
+    to exist and to suit the function's dtype rule.
+    """
     parts = aggregate.split(".")
 
-    # Format: column.aggregate_function
+    # Format: count
+    if len(parts) == 1:
+        return GlobalAggregate(column=None, function=_bare_function(parts[0], aggregate, error_type))
+
+    # Format: column.aggregate_function, or group.count
     if len(parts) == 2:
-        written_column, func = parts
-        column = _resolve_column(written_column, column_dtypes, error_type)
-        func = func.lower()
-        if column is None:
-            raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'", token=aggregate)
-        elif func not in AGGREGATE_FUNCTIONS:
-            raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'", token=aggregate)
-        elif func not in DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS and not (
-            pd.api.types.is_any_real_numeric_dtype(column_dtypes[column])
-        ):
-            raise ParsingError(
-                error_type, f"Invalid aggregate. Column is not a numeric type: '{aggregate}'", token=aggregate
-            )
+        written_left, written_function = parts
+        # The bare form is checked first, so `g1.count` is group `g1`'s row count even when a column
+        # is also called `g1`. The group is declared by the query itself, a few words earlier in
+        # OVER, which makes it the more deliberate of the two readings.
+        group = _resolve_group(written_left, groups)
+        if group is not None and written_function.lower() in BARE_AGGREGATE_FUNCTIONS:
+            return GroupAggregate(group=group, column=None, function=written_function.lower())
+        column, func = _aggregate_column_and_function(
+            written_column=written_left,
+            written_function=written_function,
+            aggregate=aggregate,
+            column_dtypes=column_dtypes,
+            error_type=error_type,
+        )
         return GlobalAggregate(column=column, function=func)
 
     # Format: group.column.aggregate_function
-    elif len(parts) == 3:
-        written_group, written_column, func = parts
+    if len(parts) == 3:
+        written_group, written_column, written_function = parts
         group = _resolve_group(written_group, groups)
-        column = _resolve_column(written_column, column_dtypes, error_type)
-        func = func.lower()
         if group is None:
             raise ParsingError(error_type, f"Invalid aggregate group: '{aggregate}'", token=aggregate)
-        elif column is None:
-            raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'", token=aggregate)
-        elif func not in AGGREGATE_FUNCTIONS:
-            raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'", token=aggregate)
-        elif func not in DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS and not (
-            pd.api.types.is_any_real_numeric_dtype(column_dtypes[column])
-        ):
-            raise ParsingError(
-                error_type, f"Invalid aggregate. Column is not a numeric type: '{aggregate}'", token=aggregate
-            )
+        column, func = _aggregate_column_and_function(
+            written_column=written_column,
+            written_function=written_function,
+            aggregate=aggregate,
+            column_dtypes=column_dtypes,
+            error_type=error_type,
+        )
         return GroupAggregate(group=group, column=column, function=func)
 
     raise ParsingError(
         error_type,
-        f"Invalid aggregate: '{aggregate}'\n"
-        "Aggregate must be in the format 'column.function' or 'group.column.function'",
+        f"Invalid aggregate: '{aggregate}'\n{_forms_sentence()}",
         token=aggregate,
     )
+
+
+def _bare_function(written_function: str, aggregate: str, error_type: ParsingErrorType) -> str:
+    """The function a bare aggregate names, or a ParsingError saying what a bare one may be.
+
+    Only `count` can stand alone, so anything else here is a function that was written without the
+    column it needs. Saying which of the two mistakes it is beats "invalid aggregate": the writer of
+    `SELECT cust, sum` meant a column and left it out.
+    """
+    func = written_function.lower()
+    if func in BARE_AGGREGATE_FUNCTIONS:
+        return func
+    if func in AGGREGATE_FUNCTIONS:
+        raise ParsingError(
+            error_type,
+            f"'{aggregate}' needs a column to aggregate: write 'column.{func}'. "
+            f"Only {', '.join(BARE_AGGREGATE_FUNCTIONS)} can be written on its own, as the row count.",
+            token=aggregate,
+        )
+    raise ParsingError(
+        error_type,
+        f"Invalid aggregate: '{aggregate}'\n{_forms_sentence()}",
+        token=aggregate,
+    )
+
+
+def _forms_sentence() -> str:
+    return "Aggregate must be in one of the forms: " + ", ".join(AGGREGATE_FORMS)
+
+
+def _aggregate_column_and_function(
+    written_column: str,
+    written_function: str,
+    aggregate: str,
+    column_dtypes: dict[str, np.dtype],
+    error_type: ParsingErrorType,
+) -> tuple[str, str]:
+    """The column and function of an aggregate that names a column, checked against each other."""
+    column = _resolve_column(written_column, column_dtypes, error_type)
+    func = written_function.lower()
+    if column is None:
+        raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'", token=aggregate)
+    if func not in AGGREGATE_FUNCTIONS:
+        raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'", token=aggregate)
+    if func not in DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS and not (
+        pd.api.types.is_any_real_numeric_dtype(column_dtypes[column])
+    ):
+        raise ParsingError(
+            error_type, f"Invalid aggregate. Column is not a numeric type: '{aggregate}'", token=aggregate
+        )
+    return column, func
 
 
 def _parse_condition_value(

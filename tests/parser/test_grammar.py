@@ -20,6 +20,7 @@ from esql.grammar import GRAMMAR
 from esql.parser.error import ParsingError
 from esql.parser.util import (
     AGGREGATE_FUNCTIONS,
+    BARE_AGGREGATE_FUNCTIONS,
     CONDITIONAL_OPERATORS,
     DTYPE_FAMILIES,
     KEYWORDS,
@@ -120,10 +121,47 @@ def test_dtype_agnostic_aggregates_accept_a_text_column(function: str, data: pd.
 
 
 @pytest.mark.parametrize("form", GRAMMAR["aggregates"]["forms"])
-def test_both_aggregate_forms_parse(form: str, data: pd.DataFrame):
+def test_every_aggregate_form_parses(form: str, data: pd.DataFrame):
     aggregate = form.replace("group", "g1").replace("column", "quant").replace("function", "sum")
-    over = " OVER g1" if "g1." in aggregate else ""
+    over = " OVER g1" if aggregate.startswith("g1.") else ""
     data.esql.validate(f"SELECT cust, {aggregate}{over}")
+
+
+@pytest.mark.parametrize("form", [form for form in GRAMMAR["aggregates"]["forms"] if "column" not in form])
+def test_a_form_that_names_no_column_is_the_row_count(form: str):
+    """The published forms are the four shapes, and two of them carry no column. That is a claim
+    about meaning, not just about parsing: the number they return has to be the row count, or the
+    bare form is just another spelling of something that borrows a column."""
+    data = pd.DataFrame({"cust": ["a", "a", "b"], "quant": [1, 1, 2]})
+    aggregate = form.replace("group", "g1")
+    over = " OVER g1 SUCH THAT g1.quant > 0" if aggregate.startswith("g1.") else ""
+    result = data.esql.query(f"SELECT cust, {aggregate}{over}")
+    assert list(result[aggregate]) == [2, 1]
+
+
+def test_every_function_that_can_stand_alone_has_both_of_its_forms_published():
+    """The parser reads `BARE_AGGREGATE_FUNCTIONS` for legality and `forms` is what a host reads to
+    offer them, so a form dropped from the list is surface the parser accepts and nobody can find.
+    Parametrizing over `forms` cannot catch that: removing an entry removes its test with it."""
+    forms = GRAMMAR["aggregates"]["forms"]
+    for function in BARE_AGGREGATE_FUNCTIONS:
+        assert function in forms, f"{function} can stand alone and no form says so"
+        assert f"group.{function}" in forms, f"{function} can stand alone in a group and no form says so"
+
+
+def test_a_column_count_counts_distinct_values_as_described(data: pd.DataFrame):
+    """`slot_kinds["aggregate"]` says the column form counts distinct values, which is what makes
+    the column in it bear on the answer at all. Two identical values, one count."""
+    assert "distinct values" in GRAMMAR["slot_kinds"]["aggregate"]
+    repeated = pd.DataFrame({"cust": ["a", "a"], "prod": ["x", "x"]})
+    assert repeated.esql.query("SELECT cust, prod.count")["prod.count"].iloc[0] == 1
+
+
+def test_the_any_dtype_rule_governs_the_column_form_only(data: pd.DataFrame):
+    """The narrowing H4 forced. `any_dtype` says which functions a non-numeric *column* may be
+    given, and the bare form gives none, so it sits outside the rule rather than inside it."""
+    for function in GRAMMAR["aggregates"]["numeric_only"]:
+        assert function not in GRAMMAR["aggregates"]["forms"], f"{function} claims a form with no column"
 
 
 def test_such_that_requires_over_as_described(data: pd.DataFrame):

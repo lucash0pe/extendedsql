@@ -15,6 +15,7 @@ exercising the parser rather than by hoping the two stay in step.
 
 from esql.parser.types import LogicalOperator
 from esql.parser.util import (
+    AGGREGATE_FORMS,
     AGGREGATE_FUNCTIONS,
     CONDITIONAL_OPERATORS,
     DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS,
@@ -34,7 +35,12 @@ from esql.parser.util import (
 # What can occupy a slot. A clause's "accepts" entry names kinds from here.
 SLOT_KINDS = {
     "column": "A column of the queried DataFrame.",
-    "aggregate": "`column.function`, or `group.column.function` for a group declared in OVER.",
+    "aggregate": (
+        "`column.function`, or `group.column.function` for a group declared in OVER. `count` alone "
+        "is the row count, naming no column, and `group.count` is that group's. With a column, "
+        "`count` counts that column's distinct values, and it is the only function legal on a "
+        "non-numeric column."
+    ),
     "group_name": "A group declared in OVER. Must match [A-Za-z0-9_]+.",
     "condition": "A comparison or semi-join, combinable with AND, OR, NOT and parentheses.",
     "group_condition": "A condition whose every column is prefixed with its group name.",
@@ -145,8 +151,14 @@ GRAMMAR = {
     "literals": LITERALS,
     "aggregates": {
         "functions": list(AGGREGATE_FUNCTIONS),
-        "forms": ["column.function", "group.column.function"],
+        # Four shapes since H4, two of which name no column. The bare ones are literal (`count`,
+        # `group.count`) because only `count` takes that form: a pattern would promise `sum` does
+        # too. A host deciding whether a projected label is a measure has to read this rather than
+        # look for a dot, since `count` is a measure and has none.
+        "forms": list(AGGREGATE_FORMS),
         "numeric_only": list(NUMERIC_AGGREGATE_FUNCTIONS),
+        # Which functions a *column* may be non-numeric for. The bare form takes no column, so it is
+        # outside this rule rather than an exception to it; see `slot_kinds["aggregate"]`.
         "any_dtype": list(DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS),
     },
     "operators": {
