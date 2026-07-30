@@ -121,6 +121,17 @@ Not every operator applies to every column. Equality works on all four kinds of 
 
 An operator used against a column it does not apply to is a parsing error, raised before the value is even read, so `song > 'Dark Star'` is refused rather than answered with an empty table. This is a property of the operator and not of the clause: the same table governs [SUCH THAT](#such-that). [HAVING](#having) has no place in it, because it compares aggregates and every aggregate is numeric.
 
+The value is then read as the column's own kind, and only that kind:
+
+| column | value is written as | examples |
+|---|---|---|
+| number | a bare number | `quant > 500`, `quant = 12.5` |
+| date | a quoted `YYYY-MM-DD` or `YYYY/MM/DD` | `date >= '2020-01-01'` |
+| text | a quoted value (see [Text values](#text-values)) | `prod = 'Ham'` |
+| boolean | `true` or `false`, unquoted, any case | `credit = true` |
+
+A value written as some other kind is a parsing error, not a comparison that quietly matches nothing: `credit = 1` and `date = 'hello'` are both refused.
+
 A tool that offers completions should read this from `esql.GRAMMAR["operators"]["dtypes"]` rather than copying the table, since the parser enforces the same structure the export is built from.
 
 

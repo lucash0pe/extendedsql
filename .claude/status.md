@@ -289,7 +289,7 @@ Opened 2026-07-29. Findings from the v1.8.0 work that are **not** about a missin
 parser accepts a query and answers it wrongly, or refuses one it should take. J4 was the first of
 these and is fixed; these two were turned up alongside it. **Both shipped in v1.9.0**; see that entry
 in the settled record. **Reopened 2026-07-29** by K3 below, turned up the same way, by probing the
-parser rather than reading it.
+parser rather than reading it, and closed again by v1.12.0.
 
 The shape they share with J4 is worth naming, because it is what to look for next: **a rule the
 parser applies by rewriting the query string before it knows the query's structure.** Lowercasing
@@ -344,7 +344,7 @@ patched twice.
   **Done in v1.9.0.** Both parameters are required and
   `test_error_type_is_a_required_argument` pins that, so a default cannot come back.
 
-- [ ] **K3. A boolean column compares against a number, because pandas counts bool as numeric.**
+- [x] **K3. A boolean column compares against a number, because pandas counts bool as numeric.**
   Found while building G3, by probing every operator against every dtype family. `WHERE credit = 1`
   parses and **matches the true rows**, `credit = 0` matches the false ones, and `credit = 5` matches
   nothing:
@@ -371,6 +371,11 @@ patched twice.
 
   Worth noting the same chain is why `credit = 5` returns an empty table instead of an error, which is
   the softer version of the same problem.
+
+  **Shipped in v1.12.0.** The fix found a second instance of the same root cause on the way in: a date
+  column accepted *any* quoted text, so `date = 'hello'` matched nothing and `date != 'hello'` matched
+  everything. Same chain, same shape, both closed by one dispatch. See that entry in the settled
+  record.
 
 ---
 
@@ -887,6 +892,58 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   *inside* `GRAMMAR["operators"]`, not new names in `esql.__all__`, and no slot kind changed, so
   `grammar.json` simply grows two keys. The menu can stop offering `song >` by intersecting the
   clause's `operators` with `dtypes[op]` for the column's `type`, which it already has from the asset.
+
+## v1.12.0 — a comparison value is read as its column's own kind (2026-07-30)
+
+- [x] **K3, and a second instance of it found on the way in.** Bumped `1.11.0 -> 1.12.0`; the gate is
+  green at **348 tests** (was 319).
+
+  **What was wrong.** `_parse_condition_value` chose its coercion with a chain of pandas dtype
+  predicates, one chain for ordering and a near-identical one for equality, and both ended by asking
+  whether the column was numeric. Two families answer that question wrongly:
+
+  | written | did | does |
+  |---|---|---|
+  | `credit = 1` | matched the true rows | refused |
+  | `credit = 0` | matched the false rows | refused |
+  | `credit = 5` | matched nothing, no error | refused |
+  | `credit = 'true'` | refused | refused |
+  | `date = 'hello'` | matched nothing, no error | refused |
+  | `date != 'hello'` | matched **everything**, no error | refused |
+
+  A bool column is numeric to pandas, so a boolean fell into the numeric branch and `1` became the
+  value. Object dtype is a *string* dtype to pandas, so any quoted text fell into the text branch and
+  reached a date column as a string, comparing unequal to every date.
+
+  **Both are the same failure mode, and it is the one worth naming: an answer instead of an error.**
+  Nothing raised. `credit = 1` looks like it worked and did something defensible; `date != 'hello'`
+  returned the whole table. A person reading either result has no way to know the query was refused
+  on its merits or answered on a misreading. That is why this was worth a release rather than a
+  footnote, and it is the same reason J4 was.
+
+  **The fix is one dispatch on `dtype_family`,** which G3 had already established as the one place
+  the four families are defined. Ordering and equality no longer have a chain each: the value is read
+  as the column's family, and the operator only decides whether ordering is allowed at all (which the
+  `OPERATOR_DTYPES` gate answered before this point). `CONTAINS` stays the single exception, because
+  its value is a substring rather than a value of the column's kind. Two small helpers, `_numeric_value`
+  and `_date_value`, replace what the two chains each spelled out inline.
+
+  So the released shape is: **`OPERATOR_DTYPES` says whether the operator applies, `dtype_family` says
+  how to read the value.** Neither question is answered by asking pandas about a dtype in the middle of
+  the other one, which is what let a bool and a date slip through.
+
+  **The error messages now name which question refused the query,** because the two call for different
+  fixes: `'>' does not apply to a string column` means change the operator, `A text value must be
+  quoted` means write the value differently. `test_parse_where_clause_raises_error_for_invalid_values`
+  went from asserting that *some* error was raised to asserting *which*, over all ten cases.
+
+  Covered by `tests/parser/test_condition_values.py` (29 tests) over all four families in WHERE and
+  SUCH THAT. Verified the guards bite: restoring the numeric fallback for bools fails 7, letting a date
+  take any quoted text fails 8, and letting a text column take an unquoted word fails 4.
+
+  **Portfolio-side follow-up: none, but worth a look at the curated examples.** No export changed.
+  Any query spelling a boolean as `= 1` or comparing a date against non-date text would now be a
+  parsing error rather than a quiet result, and `esql-smoke` catches it if one exists.
 
 ## 3. Engine-side prep for the ESQL demo
 

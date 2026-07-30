@@ -376,24 +376,27 @@ def test_parse_where_clause_raises_error_for_invalid_values(column_dtypes: dict[
     """Two refusals live here, and they are answered at different points. `cust > 'Dan'` and
     `credit > true` are refused for the *operator*, before the value is read at all, because ordering
     a text or boolean column means nothing (`OPERATOR_DTYPES`). The rest are refused for the
-    *value*: the operator applies, and `123` is not something a text column holds."""
-    invalid_values = [
-        "cust = 123",
-        "cust = 12.3",
-        "cust = True",
-        "cust = False",
-        "cust > 'Dan'",
-        "quant == '12'",
-        "month != true",
-        "credit > true",
-    ]
-    for invalid_value in invalid_values:
+    *value*: the operator applies, and `123` is not something a text column holds.
+
+    The message names which of the two it was, since they call for different fixes: change the
+    operator, or write the value the way that column's family is written."""
+    refusals = {
+        "cust = 123": "A text value must be quoted",
+        "cust = 12.3": "A text value must be quoted",
+        "cust = True": "A text value must be quoted",
+        "cust = False": "A text value must be quoted",
+        "cust > 'Dan'": "does not apply to a string column",
+        "quant == '12'": "Invalid value",
+        "month != true": "Invalid value",
+        "credit > true": "does not apply to a boolean column",
+        "credit = 1": "compares against true or false",
+        "date = 'hello'": "Invalid date",
+    }
+    for invalid_value, expected in refusals.items():
         with pytest.raises(ParsingError) as parsingError:
             parse_where_clause(where_clause=invalid_value, column_dtypes=column_dtypes)
-        assert parsingError.value.error_type == ParsingErrorType.WHERE_CLAUSE and any(
-            error in parsingError.value.message
-            for error in ["Invalid value", "Invalid column reference", "does not apply to"]
-        )
+        assert parsingError.value.error_type == ParsingErrorType.WHERE_CLAUSE
+        assert expected in parsingError.value.message, invalid_value
 
 
 def test_parse_where_clause_raises_error_for_double_logical_operators(column_dtypes: dict[str, np.dtype]):
