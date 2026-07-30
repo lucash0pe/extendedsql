@@ -18,9 +18,11 @@ from esql.parser.util import (
     AGGREGATE_FUNCTIONS,
     CONDITIONAL_OPERATORS,
     DTYPE_AGNOSTIC_AGGREGATE_FUNCTIONS,
+    DTYPE_FAMILIES,
     HAVING_OPERATORS,
     KEYWORDS,
     NUMERIC_AGGREGATE_FUNCTIONS,
+    OPERATOR_DTYPES,
     QUOTE_CHARACTERS,
     QUOTE_ESCAPE,
     SEMI_JOIN_OPERATOR,
@@ -140,5 +142,13 @@ GRAMMAR = {
         "text": list(TEXT_OPERATORS),
         "semi_join": SEMI_JOIN_OPERATOR,
         "logical": [op.value.upper() for op in LogicalOperator],
+        # The second axis of operator legality, per G3. `clauses[c]["operators"]` says which
+        # operators a clause takes; this says which column dtypes each operator applies to, and a
+        # condition needs both. The keys of `dtypes` are the four families in `dtype_families`,
+        # which are the same values a demo asset's `SchemaColumn.type` carries, so a host holding a
+        # column's type can look up what may follow it. `_parse_condition_value` gates on this same
+        # table, so it is the rule and not a description of one.
+        "dtype_families": list(DTYPE_FAMILIES),
+        "dtypes": {op: list(families) for op, families in OPERATOR_DTYPES.items()},
     },
 }

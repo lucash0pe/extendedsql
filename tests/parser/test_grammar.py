@@ -15,13 +15,17 @@ import json
 import pandas as pd
 import pytest
 
+from esql.dataset_schema import DATASET_SCHEMA
 from esql.grammar import GRAMMAR
 from esql.parser.error import ParsingError
 from esql.parser.util import (
     AGGREGATE_FUNCTIONS,
     CONDITIONAL_OPERATORS,
+    DTYPE_FAMILIES,
     KEYWORDS,
+    OPERATOR_DTYPES,
     SEMI_JOIN_OPERATOR,
+    dtype_family,
 )
 
 ALL_OPERATORS = (*CONDITIONAL_OPERATORS, SEMI_JOIN_OPERATOR)
@@ -222,3 +226,90 @@ def test_only_the_delimiter_in_use_is_doubled_as_described():
 
     summary = GRAMMAR["literals"]["text"]["summary"]
     assert "Only the delimiter in use is doubled" in summary
+
+
+###############################################################################
+# Operator legality by dtype (G3)
+###############################################################################
+# The second axis. `clauses[c]["operators"]` is the first, and a host reading only that offers
+# `song >` on a text column and watches the engine refuse it. Every cell of the table is bound below,
+# in both directions, so a rule the parser applies cannot go unpublished and a published rule cannot
+# be wrong.
+COLUMN_OF_FAMILY = {"number": "num", "date": "dt", "string": "txt", "boolean": "flag"}
+VALUE_OF_FAMILY = {"number": "1", "date": "'2020-01-01'", "string": "'a'", "boolean": "true"}
+CELLS = [(op, family) for op in OPERATOR_DTYPES for family in DTYPE_FAMILIES]
+
+
+@pytest.fixture
+def typed() -> pd.DataFrame:
+    """One column per dtype family, plus a text column to group by."""
+    return pd.DataFrame(
+        {
+            "num": [1, 2],
+            "dt": pd.to_datetime(["2020-01-01", "2020-01-02"]),
+            "txt": ["a", "b"],
+            "flag": [True, False],
+            "g": ["x", "y"],
+        }
+    )
+
+
+def test_the_published_families_are_the_ones_the_parser_sorts_columns_into(typed: pd.DataFrame):
+    enforced = typed.esql.data
+    assert GRAMMAR["operators"]["dtype_families"] == list(DTYPE_FAMILIES)
+    for family, column in COLUMN_OF_FAMILY.items():
+        assert dtype_family(enforced[column].dtype) == family
+
+
+def test_the_families_are_the_vocabulary_a_demo_asset_speaks():
+    """A host looks a column's `type` up in this table, so the two published artifacts have to use
+    one set of names. If they diverge, every lookup misses and the host silently offers nothing."""
+    assert sorted(DATASET_SCHEMA["$defs"]["ColumnType"]["enum"]) == sorted(DTYPE_FAMILIES)
+
+
+def test_every_comparison_operator_has_a_dtype_rule():
+    """A new operator cannot reach a host undeclared: `_parse_condition_value` reads this table, so
+    an operator missing from it is rejected outright rather than defaulting to legal."""
+    assert set(GRAMMAR["operators"]["dtypes"]) == set(CONDITIONAL_OPERATORS)
+
+
+def test_every_rule_names_only_real_families():
+    for operator, families in GRAMMAR["operators"]["dtypes"].items():
+        assert families, f"{operator} applies to nothing"
+        for family in families:
+            assert family in DTYPE_FAMILIES, f"{operator} lists unknown dtype family {family!r}"
+
+
+@pytest.mark.parametrize(("operator", "family"), CELLS)
+def test_a_listed_dtype_parses_and_an_unlisted_one_raises(operator: str, family: str, typed: pd.DataFrame):
+    column, value = COLUMN_OF_FAMILY[family], VALUE_OF_FAMILY[family]
+    query = f"SELECT g WHERE {column} {operator} {value}"
+    if family in GRAMMAR["operators"]["dtypes"][operator]:
+        typed.esql.validate(query)  # must not raise
+    else:
+        with pytest.raises(ParsingError, match="does not apply to"):
+            typed.esql.validate(query)
+
+
+@pytest.mark.parametrize(("operator", "family"), CELLS)
+def test_the_dtype_rule_is_the_same_in_such_that(operator: str, family: str, typed: pd.DataFrame):
+    """The table is a property of the operator, not of the clause, and SUCH THAT compares raw column
+    values exactly as WHERE does. HAVING has no cell in it: it compares aggregates, which are always
+    numeric."""
+    column, value = COLUMN_OF_FAMILY[family], VALUE_OF_FAMILY[family]
+    query = f"SELECT g, g1.num.sum OVER g1 SUCH THAT g1.{column} {operator} {value}"
+    if family in GRAMMAR["operators"]["dtypes"][operator]:
+        typed.esql.validate(query)  # must not raise
+    else:
+        with pytest.raises(ParsingError, match="does not apply to"):
+            typed.esql.validate(query)
+
+
+def test_contains_no_longer_reaches_a_date_column(typed: pd.DataFrame):
+    """The one cell this changed. `dt CONTAINS '2020'` used to parse and substring-match the date's
+    ISO text, because pandas reports the object dtype dates are stored as as a string dtype -- so the
+    guard meaning "text column" let dates through. It was never a stated behavior, and publishing it
+    would have rested the contract on that loose check."""
+    assert "date" not in GRAMMAR["operators"]["dtypes"]["CONTAINS"]
+    with pytest.raises(ParsingError, match="'CONTAINS' does not apply to a date column"):
+        typed.esql.validate("SELECT g WHERE dt CONTAINS '2020'")

@@ -73,7 +73,7 @@ def test_contains_does_not_split_a_column_name_that_starts_with_it():
 
 
 def test_contains_on_a_numeric_column_is_a_parsing_error(song_data: pd.DataFrame):
-    with pytest.raises(ParsingError, match="CONTAINS needs a text column"):
+    with pytest.raises(ParsingError, match="'CONTAINS' does not apply to a number column"):
         song_data.esql.query("SELECT song, seconds.sum WHERE seconds CONTAINS '12'")
 
 

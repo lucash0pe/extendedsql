@@ -56,6 +56,27 @@ CONDITIONAL_OPERATORS = ("CONTAINS", ">=", "<=", "!=", "==", ">", "<", "=")
 # word boundaries.
 TEXT_OPERATORS = ("CONTAINS",)
 
+# The four value families every column is coerced into (`accessor._enforce_allowed_dtypes`), and the
+# vocabulary the dtype rules below are written in. Also what a demo asset's `SchemaColumn.type`
+# carries, so a host reading `OPERATOR_DTYPES` is already holding the key to look up with.
+DTYPE_FAMILIES = ("number", "date", "string", "boolean")
+
+# Which families each comparison operator accepts. Legality has two axes: the clause (below) and the
+# column's dtype, and this is the second. `_parse_condition_value` gates on this table before it
+# coerces anything, so it is the rule rather than a description of it -- which is what lets `GRAMMAR`
+# publish it. Ordering a text or boolean column is meaningless, and CONTAINS is a substring test, so
+# it needs text.
+OPERATOR_DTYPES = {
+    "=": DTYPE_FAMILIES,
+    "==": DTYPE_FAMILIES,
+    "!=": DTYPE_FAMILIES,
+    ">": ("number", "date"),
+    ">=": ("number", "date"),
+    "<": ("number", "date"),
+    "<=": ("number", "date"),
+    "CONTAINS": ("string",),
+}
+
 # The semi-join predicate. `<key> HAS <condition>` keeps rows whose `<key>` value belongs to some
 # row satisfying `<condition>`, which is how a query reaches across grains without a join. It is
 # not a comparison and so is not one of CONDITIONAL_OPERATORS: what follows it is a whole
@@ -97,6 +118,26 @@ DATE_PATTERN = re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$")
 # parser knew which words were identifiers, and resolution was a plain `in column_dtypes` against
 # the frame's real keys, so a frame with a `Cust` column could not be queried in any spelling and
 # the error blamed `'cust'`, a word the query never contained. See `.claude/status.md`, K1.
+
+
+def dtype_family(dtype: np.dtype) -> str:
+    """Which of `DTYPE_FAMILIES` a column's dtype belongs to.
+
+    Reads an **enforced** dtype, which is the only kind the parser ever sees: the accessor coerces
+    every column into one of four families before parsing (`accessor._enforce_allowed_dtypes`), and
+    dates land as `datetime.date` objects, so object dtype means date. Bool is checked before number
+    because pandas counts it as numeric and here it is its own family.
+
+    Public because `demokit` needs the same answer for a demo asset's `SchemaColumn.type`, and two
+    copies of this mapping would let the asset disagree with the parser about what a column is.
+    """
+    if pd.api.types.is_bool_dtype(dtype):
+        return "boolean"
+    if pd.api.types.is_numeric_dtype(dtype):
+        return "number"
+    if pd.api.types.is_object_dtype(dtype):
+        return "date"
+    return "string"
 
 
 def _resolve_column(name: str, column_dtypes: dict[str, np.dtype], error_type: ParsingErrorType) -> str | None:
@@ -717,7 +758,27 @@ def _parse_condition_value(
     condition: str,
     error_type: ParsingErrorType,
 ) -> float | bool | str | date:
+    """Read the right side of a comparison as the typed value its column holds.
+
+    Two gates, in this order. First the **dtype** gate, `OPERATOR_DTYPES`: whether this operator
+    means anything against this family of column at all, which is a question about the operator and
+    answerable before the value is looked at. Then the coercion below, which is whether *this* value
+    can be read as that family. Splitting them is what lets `GRAMMAR` publish the first as a table
+    (G3) instead of a host inferring it from which conditions happen to be refused.
+    """
     value = value.strip()
+
+    allowed_families = OPERATOR_DTYPES.get(operator)
+    if allowed_families is None:
+        raise ParsingError(error_type, f"Invalid operator in condition: '{condition}'", token=condition)
+
+    family = dtype_family(column_dtype)
+    if family not in allowed_families:
+        raise ParsingError(
+            error_type,
+            f"'{operator}' does not apply to a {family} column in condition: '{condition}'",
+            token=condition,
+        )
 
     if operator in [">=", "<=", ">", "<"]:
         if _is_quoted_date(value) and pd.api.types.is_object_dtype(column_dtype):
@@ -737,17 +798,16 @@ def _parse_condition_value(
         )
 
     elif operator == "CONTAINS":
-        if not pd.api.types.is_string_dtype(column_dtype):
-            raise ParsingError(
-                error_type, f"CONTAINS needs a text column in condition: '{condition}'", token=condition
-            )
         if not _is_quoted(value):
             raise ParsingError(
                 error_type, f"CONTAINS needs a quoted text value in condition: '{condition}'", token=condition
             )
         return _unquote(value)
 
-    elif operator in ["=", "==", "!="]:
+    # Every operator the dtype gate let through is one of the eight, so this is `=`, `==` or `!=`.
+    # The dtype checks in these branches pick which family's *coercion* to apply, not whether the
+    # comparison is legal -- that question was already answered above.
+    else:
         if value.lower() in ["true", "false"] and pd.api.types.is_bool_dtype(column_dtype):
             return value.lower() == "true"
         elif _is_quoted_date(value) and pd.api.types.is_object_dtype(column_dtype):
@@ -767,8 +827,6 @@ def _parse_condition_value(
         raise ParsingError(
             error_type, f"Invalid column reference or value in condition: '{condition}'", token=condition
         )
-
-    raise ParsingError(error_type, f"Invalid operator in condition: '{condition}'", token=condition)
 
 
 ###########################################################################
