@@ -24,9 +24,14 @@ class ParsingError(Exception):
     than only naming the clause it fell in.
 
     It is a token and not a character offset on purpose: the parser runs on a query that
-    `_prepare_query` has lowercased and whitespace-collapsed outside its string literals, so
-    offsets into it do not map back onto what the user typed, while the token still matches
-    (case-insensitively). Errors about the query as a whole carry no token.
+    `_prepare_query` has whitespace-collapsed outside its string literals, so offsets into it do not
+    map back onto what the user typed, while the token still matches literally. Errors about the
+    query as a whole carry no token.
+
+    Literally as of v1.9.0. `_prepare_query` used to lowercase the query as well, so a token came
+    back lowered and a caller had to fold case to find it. That fold is what made a mixed-case
+    DataFrame column unreachable (`.claude/status.md`, K1), and removing it means a token is now
+    spelled exactly as the query spelled it.
     """
 
     def __init__(self, error_type: ParsingErrorType, message: str, token: str | None = None):

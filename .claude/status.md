@@ -277,13 +277,17 @@ H1 shipped; see the settled record. What it leaves open:
 
 Opened 2026-07-29. Findings from the v1.8.0 work that are **not** about a missing feature: the
 parser accepts a query and answers it wrongly, or refuses one it should take. J4 was the first of
-these and is fixed; these two were turned up alongside it and are not.
+these and is fixed; these two were turned up alongside it. **Both shipped in v1.9.0**; see that entry
+in the settled record. The stream is closed unless something new lands in it.
 
 The shape they share with J4 is worth naming, because it is what to look for next: **a rule the
 parser applies by rewriting the query string before it knows the query's structure.** Lowercasing
-the whole query was the J4 root, and K1 is the other half of the same pass.
+the whole query was the J4 root, and K1 was the other half of the same pass. With the fold gone,
+`_prepare_query` now rewrites only whitespace, so nothing in the parser depends on a string
+substitution made before the structure is known. That whole failure mode is closed rather than
+patched twice.
 
-- [ ] **K1. A mixed-case DataFrame column cannot be queried at all.** Found while fixing J4, by
+- [x] **K1. A mixed-case DataFrame column cannot be queried at all.** Found while fixing J4, by
   testing what `_prepare_query` does rather than reading it. Hand the accessor a frame whose columns
   are `Cust` and `Quant` and **every spelling fails**:
 
@@ -309,7 +313,9 @@ the whole query was the J4 root, and K1 is the other half of the same pass.
   lowercase throughout, which is why it has gone unnoticed. It bites the first person who points the
   accessor at their own frame, which is the entire published use.
 
-- [ ] **K2. Two default arguments are dead, and read as if they were not.** `_parse_condition_value`
+  **Fixed in v1.9.0**, as filed: the fold is gone and the twelve sites go through `_resolve_column`.
+
+- [x] **K2. Two default arguments are dead, and read as if they were not.** `_parse_condition_value`
   and `_parse_aggregate` each default `error_type` to `A or B`:
 
   ```python
@@ -323,6 +329,9 @@ the whole query was the J4 root, and K1 is the other half of the same pass.
   caller and does not, sitting in the function that reports which clause rejected a value. Delete
   the defaults and make the parameter required, so a future caller cannot silently inherit
   `SELECT CLAUSE` for a WHERE failure.
+
+  **Done in v1.9.0.** Both parameters are required and
+  `test_error_type_is_a_required_argument` pins that, so a default cannot come back.
 
 ---
 
@@ -446,7 +455,7 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `public/docs/syntax.md` section + an ESQL demo example. Pairs with HAS: HAS
   *filters* one grain by another; this *measures* across grains. Design captured now; build parked
   until the datasets/rename plumbing lands.
-- [ ] **mypy clean pass.** 159 errors (recorded as 156 until v1.8.0 measured it again; the count was
+- [ ] **mypy clean pass.** 157 errors (159 before v1.9.0, and recorded as 156 until v1.8.0; the count was
   stale at 143 before that because `make typecheck` called
   `uv run mypy`, whose console script does not spawn, so the target errored out before reaching
   mypy; fixed in v1.5.0 to `uv run python -m mypy`, the form every other target uses). All from
@@ -660,7 +669,86 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 
   **What this turned up and did not fix** is filed as **Stream K** above: a mixed-case DataFrame
   column is unreachable in any spelling (K1, the other half of the same `_prepare_query` pass), and
-  two dead `A or B` default arguments (K2).
+  two dead `A or B` default arguments (K2). Both shipped in v1.9.0, below.
+
+## v1.9.0 — identifiers resolve instead of being folded (2026-07-29)
+
+- [x] **K1 and K2.** A frame whose columns are `Cust` and `Quant` is now queryable, in any spelling,
+  and the two dead `A or B` defaults are gone. Bumped `1.8.0 -> 1.9.0`; the gate is green at
+  **247 tests** (was 230).
+
+  **The fix is a deletion, not an addition.** `_prepare_query` no longer lowercases; it collapses
+  whitespace and nothing else. Everything the fold was silently doing for the parser now happens
+  where the structure is known:
+
+  - **Keywords and operators fold case themselves.** `get_keyword_clauses` searches with
+    `re.IGNORECASE`, and `_operator_starts_at` already compared case-insensitively — it just carried
+    a comment crediting `_prepare_query` for it. The AND/OR split, the NOT prefix and the
+    `true`/`false` literals were likewise already folding on their own. So four of the six things the
+    fold appeared to be responsible for did not need it at all, which is why the change is small.
+  - **Identifiers resolve through `_resolve_column` / `_resolve_group`**, which answer with the
+    **canonical** spelling: the frame's for a column, the OVER clause's for a group. This is the part
+    that makes the fix work rather than just move the bug. Execution indexes rows by the frame's
+    spelling (`execute.column_indices`), so a parsed query carrying the *query's* spelling would
+    reach the row loop and fail there instead. All twelve `column_dtypes` sites route through the one
+    resolver.
+  - **An aggregate function lowercases** to its canonical name, so `QUANT.SUM` and `quant.sum` are
+    the same aggregate. That matters beyond cosmetics: the SELECT/HAVING dedup in
+    `_build_parsed_query` compares parsed aggregates, so without it `SELECT quant.sum HAVING
+    QUANT.SUM > 0` would accumulate twice per row and silently double the sum — BUG-8 from v1.1
+    arriving by a new route. Covered.
+
+  Decisions worth keeping:
+
+  - **Resolution tries an exact match first, then a case-folded one.** A frame *can* hold `Cust` and
+    `cust` at once, and exact-first keeps both reachable by writing either. Only a third spelling
+    (`CUST`) is genuinely ambiguous, and that raises and names both candidates rather than picking
+    one. Rejecting the whole frame up front was the alternative and is worse: it refuses queries
+    that have one obvious answer.
+  - **Two group names differing only in case are rejected.** They name the same group, so
+    `_resolve_group` would have an ambiguous case to answer. Rejecting in `parse_over_clause` is
+    where the information is, and it subsumes the exact-duplicate `OVER g1, g1`, which used to parse
+    and mean nothing.
+  - **The result is labelled canonically, not as the query wrote it.** `SELECT CUST, QUANT.SUM`
+    returns columns `Cust` and `Quant.sum`. The label is also the key execution looks the value up
+    by, so a query-spelled label would find nothing in the grouped row's data map; making it
+    canonical is what keeps the two in step by construction rather than by both being lowercase.
+  - **`ParsingError.token` now comes back spelled exactly as the query spelled it.** This is a
+    published contract *improvement* and the one visible behavior change beyond the fix: a token used
+    to be lowercased, so `README.md` told a consumer to match it case-insensitively. It matches
+    literally now. Both README and the `ParsingError` docstring were saying the old thing.
+  - **`aggregate_key` has one home.** The `column.function` / `group.column.function` key was three
+    f-strings in three files — the parser's select items, `GroupedRow`, and the HAVING evaluator —
+    which agreed only because everything was lowercase. Once identifiers carry the frame's spelling
+    they have to be built by the same code, so it moved to `parser/types.py`. A mismatch here is
+    silent: the projected column comes back empty rather than raising.
+
+  Covered by `tests/parser/test_identifier_case.py` (17 tests) exercising every clause against a
+  frame that is mixed-case throughout, which is the case that used to be unreachable, plus the two
+  existing tests that asserted the old behavior and were inverted
+  (`_prepare_query` and the error token). Verified the suite bites, by reverting each part of the fix
+  in turn: restoring the fold fails 4, making `_resolve_column` exact-only fails 12, pointing
+  `select_items_in_order` back at the written text fails 6, dropping `re.IGNORECASE` fails 13, and
+  making `_names_group` case-sensitive fails 2.
+
+  **Prose updated to match**, because `public/docs/syntax.md` already claimed "ESQL is not case
+  sensitive" and that claim was **false** for the entire published use. It now has a **Case** section
+  saying what is folded, what is not, and what a result is labelled with; the OVER section names the
+  case-collision rule; and `README.md` says it in the accessor walkthrough, since pointing the
+  accessor at your own frame is where this bit.
+
+  **Considered and declined: publishing the case rule in `GRAMMAR`.** It is the kind of rule a host
+  could mirror wrongly, which is the Stream G argument for exporting it. But no host needs it: a
+  caret menu inserts canonical names off the dataset asset, and a host pre-checking a typed query
+  calls `validate`, which now answers correctly. Following the same discipline G3 records — do not
+  publish surface before there is a reader — it stays prose. Reopen if a consumer needs to decide
+  legality for itself.
+
+  **Portfolio-side follow-up: none required.** No new name in `esql.__all__`, no new slot kind and no
+  new `GRAMMAR` key, so neither the export-diff guard nor the `unhandledSlotKinds` check fires. Both
+  portfolio datasets are lowercase throughout, so every result label is byte-identical to 1.8.0. The
+  one thing worth knowing is that `ParsingError.token` is now literal, which makes portfolio's
+  existing case-insensitive match correct but no longer necessary.
 
   **Portfolio-side follow-up, optional.** No export guard fires: `literals` is a new key inside
   `GRAMMAR` rather than a new name in `esql.__all__`, and no slot kind changed, so `grammar.json`

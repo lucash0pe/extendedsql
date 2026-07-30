@@ -21,30 +21,37 @@ def get_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:
 
 
 def _prepare_query(query: str) -> str:
-    """Canonicalize a query for parsing: lowercase it and collapse its whitespace, outside string
-    literals only.
+    """Canonicalize a query for parsing: collapse its whitespace, outside string literals only.
 
-    Keywords, identifiers and operators are case-insensitive, so folding them here means the rest
-    of the parser only ever sees one spelling. A literal is the opposite: its contents are data, so
-    its case and its internal spacing are carried through exactly as written.
+    Whitespace between tokens is formatting, so collapsing it here means the rest of the parser only
+    ever sees single spaces. A literal is the opposite: its contents are data, so its internal
+    spacing is carried through exactly as written.
 
     Telling the two apart is what `literal_spans` is for, and getting it wrong here is what made a
     value holding an apostrophe silently match nothing (`.claude/status.md`, J4). The old pass
     found literals with the regex `'[^']*'`, which closes at the first quote it meets rather than
     at the one that ends the literal.
+
+    **It used to lowercase the query too, and that is what put a mixed-case DataFrame column out of
+    reach in every spelling** (K1). Case cannot be folded here, because here there is no structure
+    yet: a word is not known to be a keyword rather than an identifier until the query has been
+    split into clauses, and an identifier has to keep its case to be matched against a frame whose
+    columns keep theirs. Case-insensitivity now lives where the structure is known, in the keyword
+    and operator matches (which fold case themselves) and in `_resolve_column` / `_resolve_group`,
+    which answer with the *frame's* spelling so the parsed query is what execution can index by.
     """
     prepared = []
     cursor = 0
     for start, end in literal_spans(query):
-        prepared.append(_fold(query[cursor:start]))
+        prepared.append(_collapse_whitespace(query[cursor:start]))
         prepared.append(query[start:end])  # verbatim: a literal's case and spacing are data
         cursor = end
-    prepared.append(_fold(query[cursor:]))
+    prepared.append(_collapse_whitespace(query[cursor:]))
     return "".join(prepared).strip()
 
 
-def _fold(text: str) -> str:
-    return re.sub(r"\s+", " ", text.lower())
+def _collapse_whitespace(text: str) -> str:
+    return re.sub(r"\s+", " ", text)
 
 
 def _build_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:

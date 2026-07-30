@@ -25,6 +25,20 @@ class AggregatesDict(TypedDict):
     group_specific: list[GroupAggregate]
 
 
+def aggregate_key(aggregate: GlobalAggregate | GroupAggregate) -> str:
+    """How an aggregate is spelled as a key: `column.function`, or `group.column.function`.
+
+    The parser writes these into `select_items_in_order`, `GroupedRow` keys its data map by them and
+    the HAVING evaluator looks one up, so all three have to agree exactly or a projected column
+    silently comes back empty. It used to be three f-strings that happened to match, which held only
+    because the whole query was lowercased before parsing; now that identifiers carry the frame's
+    spelling, they have to be built from the same parts by the same code.
+    """
+    if "group" in aggregate:
+        return f"{aggregate['group']}.{aggregate['column']}.{aggregate['function']}"
+    return f"{aggregate['column']}.{aggregate['function']}"
+
+
 class LogicalOperator(Enum):
     AND = "and"
     OR = "or"

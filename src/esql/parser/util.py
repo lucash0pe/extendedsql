@@ -27,6 +27,7 @@ from esql.parser.types import (
     SemiJoinCondition,
     SimpleCondition,
     SimpleGroupCondition,
+    aggregate_key,
 )
 
 ###########################################################################
@@ -84,6 +85,67 @@ DATE_PATTERN = re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$")
 
 
 ###########################################################################
+# Identifier Resolution
+###########################################################################
+# ESQL identifiers are case-insensitive; a DataFrame's column names are not. Every column and group
+# reference in a query therefore resolves through one of the two functions below, which answer with
+# the *canonical* spelling - the frame's for a column, the OVER clause's for a group - and the
+# parsed query carries that rather than what was typed. Execution indexes rows by the frame's
+# spelling (`execute.column_indices`), so anything else puts the column out of reach.
+#
+# That is exactly what it was until v1.9.0: `_prepare_query` lowercased the whole query before the
+# parser knew which words were identifiers, and resolution was a plain `in column_dtypes` against
+# the frame's real keys, so a frame with a `Cust` column could not be queried in any spelling and
+# the error blamed `'cust'`, a word the query never contained. See `.claude/status.md`, K1.
+
+
+def _resolve_column(name: str, column_dtypes: dict[str, np.dtype], error_type: ParsingErrorType) -> str | None:
+    """The frame's spelling of the column `name` names, or None when it names no column.
+
+    None means "not a column", which several callers need as an answer rather than an error: it is
+    how a bare word falls through to being read as a literal.
+
+    An exact match wins before a case-folded one, so a frame holding both `Cust` and `cust` is still
+    queryable by writing either exactly. Only a reference matching neither exactly and both when
+    folded is ambiguous, and that raises rather than silently picking one.
+    """
+    if name in column_dtypes:
+        return name
+    matches = [column for column in column_dtypes if str(column).lower() == name.lower()]
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise ParsingError(
+            error_type,
+            f"'{name}' matches more than one column ({', '.join(sorted(str(m) for m in matches))}), "
+            f"so which one it means is ambiguous. Write one of them exactly.",
+            token=name,
+        )
+    return None
+
+
+def _resolve_group(name: str, groups: list[str]) -> str | None:
+    """The OVER clause's spelling of the group `name` names, or None when it names no group.
+
+    There is no ambiguous case to handle: `parse_over_clause` rejects two group names that differ
+    only in case, so a folded name matches at most one declared group.
+    """
+    for group in groups:
+        if group.lower() == name.lower():
+            return group
+    return None
+
+
+def _names_group(text: str, group: str) -> bool:
+    """Whether `text` opens with `<group>.`, case-insensitively.
+
+    Case folding preserves length, so a caller that gets True can slice `len(group) + 1` characters
+    off `text` to reach what follows the prefix.
+    """
+    return text[: len(group) + 1].lower() == f"{group}.".lower()
+
+
+###########################################################################
 # Keyword & Clause Extraction
 ###########################################################################
 def get_keyword_clauses(query: str) -> dict[str, str | None]:
@@ -95,9 +157,11 @@ def get_keyword_clauses(query: str) -> dict[str, str | None]:
     masked = mask_literals(query)
 
     keyword_indices = []
-    for keyword in (kw.lower() for kw in keyword_clauses):
+    for keyword in keyword_clauses:
+        # Case-insensitively, since the query arrives spelled however it was written. Case folding
+        # preserves length, so an index found here is that index into `query` too.
         pattern = r"\b" + re.escape(keyword.strip()) + r"\b"
-        matches = list(re.finditer(pattern, masked))
+        matches = list(re.finditer(pattern, masked, re.IGNORECASE))
         if matches:
             keyword_indices.append(matches[0].start())
         else:
@@ -155,6 +219,16 @@ def parse_over_clause(over_clause: str | None) -> list[str]:
         match = re.match(pattern, group)
         if not match:
             raise ParsingError(ParsingErrorType.OVER_CLAUSE, f"Invalid group name: '{group}'", token=group)
+        # Group names are case-insensitive like every other identifier, so two that differ only in
+        # case name the same group twice and a reference to either could not be resolved to one of
+        # them. This is what lets `_resolve_group` answer without an ambiguous case.
+        if existing := _resolve_group(group, groups):
+            raise ParsingError(
+                ParsingErrorType.OVER_CLAUSE,
+                f"Group '{group}' is already declared as '{existing}'; group names are "
+                f"case-insensitive, so these name the same group.",
+                token=group,
+            )
         groups.append(group)
     return groups
 
@@ -178,12 +252,15 @@ def parse_select_clause(
                 aggregates["group_specific"].append(aggregate_result)
             else:
                 aggregates["global_scope"].append(aggregate_result)
+            # The canonical key rather than what was written: these are looked up in the grouped
+            # row's data map, which is keyed the same way. See `types.aggregate_key`.
+            select_items_in_order.append(aggregate_key(aggregate_result))
         else:
-            if item in column_dtypes:
-                grouping_attributes.append(item)
-            else:
+            column = _resolve_column(item, column_dtypes, ParsingErrorType.SELECT_CLAUSE)
+            if column is None:
                 raise ParsingError(ParsingErrorType.SELECT_CLAUSE, f"Invalid column: '{item}'", token=item)
-        select_items_in_order.append(item)
+            grouping_attributes.append(column)
+            select_items_in_order.append(column)
     if len(grouping_attributes) == 0:
         raise ParsingError(
             ParsingErrorType.SELECT_CLAUSE, f"No grouping attributes given: '{select_clause}'", token=select_clause
@@ -243,7 +320,8 @@ def _parse_semi_join_condition(
             f"{SEMI_JOIN_OPERATOR} needs a column before it: '{condition}'",
             token=condition,
         )
-    if key not in column_dtypes:
+    resolved_key = _resolve_column(key, column_dtypes, ParsingErrorType.WHERE_CLAUSE)
+    if resolved_key is None:
         raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Invalid column: {key}", token=key)
     if not inner:
         raise ParsingError(
@@ -252,7 +330,7 @@ def _parse_semi_join_condition(
             token=condition,
         )
     return SemiJoinCondition(
-        key=key, operator=SEMI_JOIN_OPERATOR, condition=_parse_where_clause(inner, column_dtypes)
+        key=resolved_key, operator=SEMI_JOIN_OPERATOR, condition=_parse_where_clause(inner, column_dtypes)
     )
 
 
@@ -260,21 +338,23 @@ def _parse_simple_condition(condition: str, column_dtypes: dict[str, np.dtype]) 
     condition = condition.strip()
     split = _split_condition(condition)
     if not split:
-        if condition in column_dtypes and pd.api.types.is_bool_dtype(column_dtypes[condition]):
-            return SimpleCondition(column=condition, operator="=", value=True, is_emf=False)
+        bare = _resolve_column(condition, column_dtypes, ParsingErrorType.WHERE_CLAUSE)
+        if bare is not None and pd.api.types.is_bool_dtype(column_dtypes[bare]):
+            return SimpleCondition(column=bare, operator="=", value=True, is_emf=False)
         raise ParsingError(
             ParsingErrorType.WHERE_CLAUSE, f"No conditional operator found in condition: '{condition}'", token=condition
         )
 
-    column, operator, value = split
-    if column not in column_dtypes:
-        raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Invalid column: {column}", token=column)
+    written_column, operator, value = split
+    column = _resolve_column(written_column, column_dtypes, ParsingErrorType.WHERE_CLAUSE)
+    if column is None:
+        raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Invalid column: {written_column}", token=written_column)
     if operator and value == "":
         raise ParsingError(ParsingErrorType.WHERE_CLAUSE, f"Missing value for condition: {condition}", token=condition)
 
     # An entry value reads the grouped row being computed, and WHERE runs before there are any, so
     # it is rejected here by name rather than falling through to "invalid value".
-    entry_value = _parse_entry_value(value, column_dtypes)
+    entry_value = _parse_entry_value(value, column_dtypes, ParsingErrorType.WHERE_CLAUSE)
     if entry_value:
         raise ParsingError(
             ParsingErrorType.WHERE_CLAUSE,
@@ -385,7 +465,7 @@ def _parse_such_that_section(
 
     group_found = None
     for group in groups:
-        if section.startswith(group + "."):
+        if _names_group(section, group):
             group_found = group
             break
     if not group_found:
@@ -393,7 +473,7 @@ def _parse_such_that_section(
             ParsingErrorType.SUCH_THAT_CLAUSE, f"No valid group found in condition: '{section}'", token=section
         )
 
-    if any(other_group + "." in section for other_group in groups if other_group != group_found):
+    if any(f"{other}.".lower() in section.lower() for other in groups if other != group_found):
         raise ParsingError(
             ParsingErrorType.SUCH_THAT_CLAUSE,
             f"Multiple groups found in a clause: '{section}'\nEach comma separated clause must contain only one group.",
@@ -416,20 +496,24 @@ def _parse_simple_group_condition(
         )
     split = _split_condition(condition)
     if not split:
-        if condition.startswith(group + "."):
-            column = condition[len(group) + 1 :].strip()
-            if column in column_dtypes and pd.api.types.is_bool_dtype(column_dtypes[column]):
-                return SimpleGroupCondition(group=group, column=column, operator="=", value=True, is_emf=False)
+        if _names_group(condition, group):
+            written_column = condition[len(group) + 1 :].strip()
+            bare = _resolve_column(written_column, column_dtypes, ParsingErrorType.SUCH_THAT_CLAUSE)
+            if bare is not None and pd.api.types.is_bool_dtype(column_dtypes[bare]):
+                return SimpleGroupCondition(group=group, column=bare, operator="=", value=True, is_emf=False)
         raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, f"Invalid condition: '{condition}'", token=condition)
 
     left, operator, value = split
-    if not left.startswith(group + "."):
+    if not _names_group(left, group):
         raise ParsingError(
             ParsingErrorType.SUCH_THAT_CLAUSE, f"Invalid group for condition: '{condition}'", token=condition
         )
-    column = left[len(group) + 1 :]
-    if column not in column_dtypes:
-        raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, f"Invalid column: '{column}'", token=column)
+    written_column = left[len(group) + 1 :]
+    column = _resolve_column(written_column, column_dtypes, ParsingErrorType.SUCH_THAT_CLAUSE)
+    if column is None:
+        raise ParsingError(
+            ParsingErrorType.SUCH_THAT_CLAUSE, f"Invalid column: '{written_column}'", token=written_column
+        )
     if operator and value == "":
         raise ParsingError(
             ParsingErrorType.SUCH_THAT_CLAUSE, f"Missing value for condition: {condition}", token=condition
@@ -437,7 +521,7 @@ def _parse_simple_group_condition(
 
     # An entry value makes this an EMF condition: what it compares against is not known until
     # execution reaches an output row, so parsing stops at the reference and validates it.
-    entry_value = _parse_entry_value(value, column_dtypes)
+    entry_value = _parse_entry_value(value, column_dtypes, ParsingErrorType.SUCH_THAT_CLAUSE)
     if entry_value:
         _validate_entry_value(
             entry_value=entry_value,
@@ -577,14 +661,16 @@ def _parse_aggregate(
     aggregate: str,
     groups: list[str],
     column_dtypes: dict[str, np.dtype],
-    error_type=ParsingErrorType.SELECT_CLAUSE or ParsingErrorType.HAVING_CLAUSE,
+    error_type: ParsingErrorType,
 ) -> GlobalAggregate | GroupAggregate:
     parts = aggregate.split(".")
 
     # Format: column.aggregate_function
     if len(parts) == 2:
-        column, func = parts
-        if column not in column_dtypes:
+        written_column, func = parts
+        column = _resolve_column(written_column, column_dtypes, error_type)
+        func = func.lower()
+        if column is None:
             raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'", token=aggregate)
         elif func not in AGGREGATE_FUNCTIONS:
             raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'", token=aggregate)
@@ -598,10 +684,13 @@ def _parse_aggregate(
 
     # Format: group.column.aggregate_function
     elif len(parts) == 3:
-        group, column, func = parts
-        if group not in groups:
+        written_group, written_column, func = parts
+        group = _resolve_group(written_group, groups)
+        column = _resolve_column(written_column, column_dtypes, error_type)
+        func = func.lower()
+        if group is None:
             raise ParsingError(error_type, f"Invalid aggregate group: '{aggregate}'", token=aggregate)
-        elif column not in column_dtypes:
+        elif column is None:
             raise ParsingError(error_type, f"Invalid aggregate column: '{aggregate}'", token=aggregate)
         elif func not in AGGREGATE_FUNCTIONS:
             raise ParsingError(error_type, f"Invalid aggregate function: '{aggregate}'", token=aggregate)
@@ -626,7 +715,7 @@ def _parse_condition_value(
     operator: str,
     value: str,
     condition: str,
-    error_type=ParsingErrorType.SELECT_CLAUSE or ParsingErrorType.SUCH_THAT_CLAUSE,
+    error_type: ParsingErrorType,
 ) -> float | bool | str | date:
     value = value.strip()
 
@@ -685,7 +774,9 @@ def _parse_condition_value(
 ###########################################################################
 # Entry Value Parsing
 ###########################################################################
-def _parse_entry_value(value: str, column_dtypes: dict[str, np.dtype]) -> EntryValue | None:
+def _parse_entry_value(
+    value: str, column_dtypes: dict[str, np.dtype], error_type: ParsingErrorType
+) -> EntryValue | None:
     """Read `value` as `<column>` or `<column> ± <number>`, or None when it is not that shape.
 
     None means "this is a literal, not a column reference", so a caller falls through to the
@@ -698,8 +789,9 @@ def _parse_entry_value(value: str, column_dtypes: dict[str, np.dtype]) -> EntryV
     match = ENTRY_VALUE_PATTERN.match(value.strip())
     if not match:
         return None
-    attribute, sign, offset = match.groups()
-    if attribute not in column_dtypes:
+    written_attribute, sign, offset = match.groups()
+    attribute = _resolve_column(written_attribute, column_dtypes, error_type)
+    if attribute is None:
         return None
     if offset is None:
         return EntryValue(attribute=attribute, delta=0)
@@ -870,8 +962,9 @@ def _operator_starts_at(condition: str, index: int, operator: str) -> bool:
 
     A word operator (CONTAINS) has to sit on word boundaries, or a column named `contains_tax`
     would split as the operator. A symbol operator (>=) cannot collide that way and matches
-    directly. The comparison is case-insensitive because `_prepare_query` lowercases everything
-    outside quotes, so the canonical uppercase spelling is what callers see back.
+    directly. The comparison folds case, which is where operator case-insensitivity lives now that
+    `_prepare_query` no longer lowercases the query; callers get the canonical spelling back either
+    way, since what is returned is the constant rather than the matched text.
     """
     candidate = condition[index : index + len(operator)]
     if not operator.isalpha():

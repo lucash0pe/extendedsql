@@ -1,6 +1,6 @@
 [project]
 name = "esql"
-version = "1.8.0"
+version = "1.9.0"
 description = "ESQL is a SQL-based query language for OLAP that computes multiple aggregates across groups without nested subqueries or repeated grouping."
 readme = "README.md"
 requires-python = ">=3.12"

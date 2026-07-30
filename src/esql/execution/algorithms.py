@@ -11,6 +11,7 @@ from esql.parser.types import (
     ParsedSelectClause,
     ParsedSuchThatClause,
     ParsedWhereClause,
+    aggregate_key,
 )
 from esql.parser.util import find_group_in_such_that_section
 
@@ -329,18 +330,13 @@ def _evaluate_having_clause(condition: ParsedHavingClause, data_map: dict[str, s
             raise RuntimeError(f"Unknown logical operator in HAVING clause: '{operator}'")
 
     condition_aggregate = condition.get("aggregate")
-    if "function" in condition_aggregate:
-        if "group" in condition_aggregate:
-            aggregate_key = (
-                f"{condition_aggregate['group']}.{condition_aggregate['column']}.{condition_aggregate['function']}"
-            )
-        else:
-            aggregate_key = f"{condition_aggregate['column']}.{condition_aggregate['function']}"
-    else:
+    if "function" not in condition_aggregate:
         raise RuntimeError(f"Could not recognize the condition in the HAVING clause: '{condition}'")
 
     return _evaluate_actual_vs_expected_value(
-        actual_value=data_map.get(aggregate_key), operator=operator, condition_value=condition.get("value")
+        actual_value=data_map.get(aggregate_key(condition_aggregate)),
+        operator=operator,
+        condition_value=condition.get("value"),
     )
 
 

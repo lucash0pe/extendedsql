@@ -19,9 +19,15 @@ from esql.parser.types import (
 )
 
 
-def test_prepare_query_returns_expected_structure():
+def test_prepare_query_collapses_whitespace_and_changes_nothing_else():
+    """Whitespace outside a literal is formatting; everything else, case included, is left alone.
+
+    It used to lowercase the query here as well. That is what put a mixed-case DataFrame column out
+    of reach in every spelling (`.claude/status.md`, K1): folding ran before the parser knew which
+    words were identifiers, so `SELECT Cust` asked the frame for `cust`.
+    """
     query = 'SELECT cust,         prod,         g1.quant.sum OVER g1,g2,g3      WHERE cust = "DAN" and month = 1 or prod =   "APLEHSVCDGhsfjadmg_hgdoe3v¡=3h8d" Such thAt g3.prod = \'bceL;lwhan\',g2.state="NY" HAvING g1.quant.avg > 0.5 orDer by     3'
-    expected = 'select cust, prod, g1.quant.sum over g1,g2,g3 where cust = "DAN" and month = 1 or prod = "APLEHSVCDGhsfjadmg_hgdoe3v¡=3h8d" such that g3.prod = \'bceL;lwhan\',g2.state="NY" having g1.quant.avg > 0.5 order by 3'
+    expected = 'SELECT cust, prod, g1.quant.sum OVER g1,g2,g3 WHERE cust = "DAN" and month = 1 or prod = "APLEHSVCDGhsfjadmg_hgdoe3v¡=3h8d" Such thAt g3.prod = \'bceL;lwhan\',g2.state="NY" HAvING g1.quant.avg > 0.5 orDer by 3'
     result = _prepare_query(query)
     assert result == expected
 
