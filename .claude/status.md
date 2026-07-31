@@ -1060,7 +1060,7 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 ## v1.15.0 — `count` counts rows, `column.count` counts distinct (2026-07-30)
 
 - [x] **H4, which closes Stream H.** `SELECT state, count` is the row count, and `state.count` is now
-  the number of distinct states. Bumped `1.14.0 -> 1.15.0`; the gate is green at **423 tests**
+  the number of distinct states. Bumped `1.14.0 -> 1.15.0`; the gate is green at **425 tests**
   (was 386).
 
   ```sh
@@ -1089,9 +1089,18 @@ All fixed and covered by the now-meaningful integration suite (see §3).
     `count.sum`, `WHERE count > 5`, `ORDER BY count`. Only the bare word in a grouping-attribute slot
     is spoken for, and only `count` -- a column named `sum` is still projectable, because the check
     that refuses `SELECT cust, sum` runs *after* the word fails to name a column.
-  - **`g1.count` beats a column named `g1`.** Same tiebreak, decided the other way round from a
-    coin-flip: the group is declared by the query itself a few words earlier, in OVER, which makes it
-    the more deliberate of the two readings.
+  - **A group cannot be named after a column**, which is the collision H4 created and the one place
+    a tiebreak was the wrong instrument. `g1.count` is a group's row count, and if `g1` were also a
+    column the same words would equally be that column's distinct count. The first cut preferred the
+    group, on the reasoning that OVER declares it a few words earlier; that left the query legal and
+    its *meaning* dependent on the frame handed in, which is the failure H4 exists to remove rather
+    than a smaller version of it to accept. `parse_over_clause` now rejects the name where the query
+    chooses it, next to the case-collision rule it already enforced, and `_parse_aggregate`'s
+    two-part branch is a lookup rather than a decision.
+
+    This does not extend to `count.count`, which was never ambiguous: the word to the left of a dot
+    in `column.function` is a column by position, whatever it is called. The bare slot is the only
+    place a word could be either thing, and that is where the reservation lives.
   - **`sum / count` is no longer `avg`, and that is not a bug to fix.** It is a SQL identity, not a
     law; with `count` defined as distinct it does not hold, and `avg` keeps its own definition over
     rows. Pinned by a test so nobody restores it by "fixing" avg.
@@ -1118,7 +1127,9 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   pin the two counts to `COUNT(*)` and `COUNT(DISTINCT state)`, and they disagree on that data, so a
   test agreeing with both would prove nothing. The three MF parity queries that used `count(quant)`
   now say `count(distinct quant)`, which is what their ESQL side asks for. Covered by
-  `tests/execution/test_count.py` (27 tests) plus the grammar bindings.
+  `tests/execution/test_count.py` (28 tests) plus the grammar bindings, and the group-name rule by
+  one test either side of the seam: `parse_over_clause` directly and the accessor for the query that
+  motivates it.
 
   **Verified the guards bite**, and two of them did not at first, which is the part worth recording.
   Reverting the distinct count fails 9, un-reserving the bare word in SELECT fails 21, reading

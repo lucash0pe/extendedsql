@@ -117,6 +117,8 @@ A blank cell is not a value, so it is skipped by a distinct count and by every o
 
 The OVER clause determines the names of the groups that are used to compute aggregates within the conditions set in the [SUCH THAT](#such-that) clause. The groups names are separated by commans. Group names can only include letters, numbers, and `_`, and they are not case sensitive: `OVER G1` can be referenced as `g1` anywhere below. Because they are not case sensitive, two names differing only in case would name the same group and are rejected. It is recommended that group names are short and concise.
 
+A group also cannot be named after a column of the queried data, and that is rejected too. The word to the left of a dot is read as a group or as a column depending on which one it names, so a name that is both makes `sales.count` mean either the group's row count or the distinct count of a column called `sales`. Choosing between those readings would make the same query mean different things over different data, so the name is refused where you pick it instead.
+
 If you want to define two groups with the names `g1` and `g2`, like in the SELECT clause example above, you would write:
 
 `OVER g1, g2`

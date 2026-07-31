@@ -116,6 +116,15 @@ def test_a_group_count_is_missing_when_its_section_matches_nothing(plays: pd.Dat
     assert pd.isna(_for(result, "NY", "g1.count"))
 
 
+def test_a_group_cannot_be_named_after_a_column(plays: pd.DataFrame):
+    """H4 is what makes this collision matter. `g1.count` is a group's row count, and if `g1` were
+    also a column the same words would equally be that column's distinct count -- a query whose
+    meaning depends on the frame it is handed. The name is refused where the query chooses it,
+    rather than one reading being preferred at every reference."""
+    with pytest.raises(ParsingError, match="names the column 'city'"):
+        plays.esql.query("SELECT state, city.count OVER city SUCH THAT city.seconds > 5")
+
+
 def test_a_group_column_count_is_distinct_within_the_group(plays: pd.DataFrame):
     result = plays.esql.query("SELECT state, g1.city.count, g1.count OVER g1 SUCH THAT g1.seconds > 5")
     assert _for(result, "CA", "g1.count") == 2  # the two rows with a present, matching value
