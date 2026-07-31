@@ -101,6 +101,11 @@ query's, so the column names you get back do not depend on how the query was typ
 the exception and stays case sensitive, because its contents are data: see
 [Case](public/docs/syntax.md#case).
 
+One name is reserved in your data: a column called `count` (in any case) is refused, with a
+`ParsingError` asking you to rename it. `count` on its own is a query's way of saying "how many
+rows", so a column of that name would be a word with two readings and no way to pick between them.
+Every other aggregate function needs a column before it, so a column named `sum` or `avg` is fine.
+
 Aggregates are rounded to 2 decimal places by default. You can change this by passing a different value to the query as `decimal_places`.
 
 ```python

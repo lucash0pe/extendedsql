@@ -6,7 +6,9 @@ from beartype.vale import Is
 from pandas.api.extensions import register_dataframe_accessor
 
 from esql.execution.execute import execute
+from esql.parser.error import ParsingError, ParsingErrorType
 from esql.parser.parse import get_parsed_query
+from esql.parser.util import BARE_AGGREGATE_FUNCTIONS
 
 IntGreaterThanZero = Annotated[int, Is[lambda x: x > 0]]
 
@@ -14,6 +16,7 @@ IntGreaterThanZero = Annotated[int, Is[lambda x: x > 0]]
 @register_dataframe_accessor("esql")
 class ESQLAccessor:
     def __init__(self, data: pd.DataFrame):
+        _reject_reserved_columns(data)
         self.data = _enforce_allowed_dtypes(data)
 
     @beartype
@@ -36,6 +39,30 @@ class ESQLAccessor:
         still return zero rows.
         """
         get_parsed_query(self.data, query)
+
+
+def _reject_reserved_columns(data: pd.DataFrame) -> None:
+    """Refuse a frame whose columns use a name the language has taken.
+
+    Only the names that can be written as a whole aggregate are taken: `count` means the row count
+    wherever a grouping attribute could go, so a column of that name is a word with two readings.
+    Every other function needs a column before it (`sum` is never an aggregate on its own), so a
+    column may be called `sum` and this rule leaves it alone.
+
+    Refused here, at the frame, rather than resolved per reference. Preferring one reading would
+    leave `SELECT venue, count` legal and its meaning decided by the data handed in, and preferring
+    the other would put the row count out of reach for that frame alone. Neither is something a
+    query writer can see. Renaming the column is, so the error asks for that and names it.
+    """
+    reserved = {name.lower() for name in BARE_AGGREGATE_FUNCTIONS}
+    for column in data.columns:
+        if str(column).lower() in reserved:
+            raise ParsingError(
+                ParsingErrorType.RESERVED_COLUMN,
+                f"Column '{column}' is named after the aggregate '{str(column).lower()}', which ESQL "
+                f"reads as the row count wherever a column could go. Rename the column in the data.",
+                token=str(column),
+            )
 
 
 def _enforce_allowed_dtypes(data: pd.DataFrame) -> pd.DataFrame:

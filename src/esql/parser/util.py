@@ -328,11 +328,9 @@ def parse_select_clause(
     aggregates = AggregatesDict(global_scope=[], group_specific=[])
 
     for item in (s.strip() for s in select_clause.split(",")):
-        # A dot means an aggregate, and so does a bare `count`. The bare form is read as the row
-        # count even when the frame has a column of that name, which makes `count` a reserved word
-        # in this position: the reading has to be the same for every frame, or the same query would
-        # mean different things over different data. Such a column is still reachable everywhere
-        # else, `count.count` and `WHERE count > 5` included.
+        # A dot means an aggregate, and so does a bare `count`. There is nothing else it could be:
+        # the accessor refuses a frame with a column of that name
+        # (`accessor._reject_reserved_columns`), so the word has one reading here.
         if "." in item or item.lower() in BARE_AGGREGATE_FUNCTIONS:
             aggregate_result = _parse_aggregate(
                 aggregate=item, groups=groups, column_dtypes=column_dtypes, error_type=ParsingErrorType.SELECT_CLAUSE
@@ -350,7 +348,8 @@ def parse_select_clause(
                 # `SELECT cust, sum` is a function missing its column rather than a misspelled
                 # column, and only one of those two mistakes is worth pointing at. `count` never
                 # reaches here, so this call always raises. Checked *after* resolution, which is
-                # what keeps a column named `sum` projectable while `count` stays reserved.
+                # what keeps a column named `sum` projectable: only `count` is reserved, because
+                # only `count` can be a whole aggregate on its own.
                 if item.lower() in AGGREGATE_FUNCTIONS:
                     _bare_function(item, item, ParsingErrorType.SELECT_CLAUSE)
                 raise ParsingError(ParsingErrorType.SELECT_CLAUSE, f"Invalid column: '{item}'", token=item)
