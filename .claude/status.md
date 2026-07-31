@@ -1060,7 +1060,7 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 ## v1.15.0 — `count` counts rows, `column.count` counts distinct (2026-07-30)
 
 - [x] **H4, which closes Stream H.** `SELECT state, count` is the row count, and `state.count` is now
-  the number of distinct states. Bumped `1.14.0 -> 1.15.0`; the gate is green at **425 tests**
+  the number of distinct states. Bumped `1.14.0 -> 1.15.0`; the gate is green at **428 tests**
   (was 386).
 
   ```sh
@@ -1083,12 +1083,25 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 
   Decisions worth keeping:
 
-  - **`count` is reserved in SELECT, above a column of the same name.** The alternative was to let
-    the frame decide, and then the same query means different things over different data. A column
-    called `count` stays reachable everywhere it cannot be confused with the function: `count.count`,
-    `count.sum`, `WHERE count > 5`, `ORDER BY count`. Only the bare word in a grouping-attribute slot
-    is spoken for, and only `count` -- a column named `sum` is still projectable, because the check
-    that refuses `SELECT cust, sum` runs *after* the word fails to name a column.
+  - **`count` is a reserved name and a frame using it for a column is refused.** Three positions
+    were tried and the first two were wrong. *Prefer the aggregate* leaves `SELECT venue, count`
+    legal and meaning different things over different data. *Prefer the column* puts the row count
+    out of reach for that frame alone. Both are invisible to whoever writes the query, and the thing
+    that is visible -- the column's name -- is the thing that can be changed, so
+    `accessor._reject_reserved_columns` refuses the frame, names the column and asks for a rename.
+    Same instrument as the group-name rule below and the same reasoning: refuse the collision where
+    the name is chosen rather than resolve it at every reference.
+
+    **Only names that can be a whole aggregate are taken**, which is `BARE_AGGREGATE_FUNCTIONS` and
+    today means `count` alone. `sum` is never an aggregate by itself, so a column may be called
+    `sum`, `SELECT cust, sum` projects it and `sum.sum` is its total. Reserving all five would have
+    cost four names to protect against an ambiguity only one of them has.
+
+    **It gets its own `ParsingErrorType.RESERVED_COLUMN`**, and it is raised when the accessor is
+    handed the frame rather than when a query is parsed, so it names a *column* rather than a query
+    token. Same shape as `STRING_LITERAL` in v1.8.0: a new enum value, so a host switching on
+    `error_type` sees a new case. Worth knowing that `df.esql` itself now raises for such a frame,
+    before any query exists.
   - **A group cannot be named after a column**, which is the collision H4 created and the one place
     a tiebreak was the wrong instrument. `g1.count` is a group's row count, and if `g1` were also a
     column the same words would equally be that column's distinct count. The first cut preferred the
@@ -1098,9 +1111,9 @@ All fixed and covered by the now-meaningful integration suite (see §3).
     chooses it, next to the case-collision rule it already enforced, and `_parse_aggregate`'s
     two-part branch is a lookup rather than a decision.
 
-    This does not extend to `count.count`, which was never ambiguous: the word to the left of a dot
-    in `column.function` is a column by position, whatever it is called. The bare slot is the only
-    place a word could be either thing, and that is where the reservation lives.
+    Both rules landed on the same answer from opposite directions, which is worth noting: a name
+    the language reads two ways is refused where it is written down, in the OVER clause for a group
+    and in the data for a column.
   - **`sum / count` is no longer `avg`, and that is not a bug to fix.** It is a SQL identity, not a
     law; with `count` defined as distinct it does not hold, and `avg` keeps its own definition over
     rows. Pinned by a test so nobody restores it by "fixing" avg.
@@ -1127,9 +1140,9 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   pin the two counts to `COUNT(*)` and `COUNT(DISTINCT state)`, and they disagree on that data, so a
   test agreeing with both would prove nothing. The three MF parity queries that used `count(quant)`
   now say `count(distinct quant)`, which is what their ESQL side asks for. Covered by
-  `tests/execution/test_count.py` (28 tests) plus the grammar bindings, and the group-name rule by
-  one test either side of the seam: `parse_over_clause` directly and the accessor for the query that
-  motivates it.
+  `tests/execution/test_count.py` (30 tests) plus the grammar bindings, and the two collision rules
+  by one test either side of each seam: `parse_over_clause` directly and the accessor for the query
+  that motivates it, the reserved column at `df.esql` and through `query` and `validate`.
 
   **Verified the guards bite**, and two of them did not at first, which is the part worth recording.
   Reverting the distinct count fails 9, un-reserving the bare word in SELECT fails 21, reading
@@ -1151,7 +1164,8 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `esql.__all__` and no new slot kind, so neither the export-diff guard nor `unhandledSlotKinds`
   fires -- `grammar.json` simply carries four forms where it carried two. What does change is
   *meaning*: all 13 curated examples borrow `position` for a row count and now answer the distinct
-  count instead. They still parse, so nothing fails loudly; `esql-smoke` compares against the SQL
+  count instead. `RESERVED_COLUMN` is a new `error_type` its funnel should have a case for, and any
+  dataset with a `count` column now fails its build with that message rather than at query time. They still parse, so nothing fails loudly; `esql-smoke` compares against the SQL
   equivalent and is what catches them. Land it with D1 as filed. The result table must also read
   `forms` rather than looking for a dot, or a bare `count` column is filed as a dimension.
 

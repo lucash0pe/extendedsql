@@ -14,6 +14,10 @@ class ParsingErrorType(Enum):
     # Not about a clause: a literal's delimiters are read before the query is split into clauses,
     # so there is no clause to name yet.
     STRING_LITERAL = "STRING LITERAL"
+    # Not about the query at all: the *data* uses a name the language has taken. Raised when the
+    # accessor is handed the frame, before any query exists, so it names a column rather than a
+    # token. See `accessor._reject_reserved_columns`.
+    RESERVED_COLUMN = "RESERVED COLUMN"
 
 
 class ParsingError(Exception):

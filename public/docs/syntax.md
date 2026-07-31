@@ -110,7 +110,9 @@ The other four functions are unchanged and always run over rows, not over distin
 
 A blank cell is not a value, so it is skipped by a distinct count and by every other function, while a row count still counts its row. On a column that is blank everywhere, a distinct count has no value at all rather than zero, the same as any aggregate with nothing to compute.
 
-`count` is a reserved word where a grouping attribute would go: written on its own in [SELECT](#select) it is the row count even if the queried data has a column of that name, since the same query has to mean the same thing over every frame. Such a column is still reachable everywhere else, `count.count` and `WHERE count > 5` included.
+`count` is a reserved name, and the queried data cannot use it for a column. Written on its own the word is the row count wherever a column could go, so a column of that name would be a word with two readings and nothing in the query to pick between them. ESQL refuses such a table outright, names the column and asks you to rename it in the data, rather than preferring a reading and answering.
+
+Only names that can be a whole aggregate are taken this way, which today is `count` alone. `sum` is never an aggregate by itself, so a column may be called `sum` and `sum.sum` is its total.
 
 
 ## OVER

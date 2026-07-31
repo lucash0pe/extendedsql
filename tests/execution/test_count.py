@@ -210,20 +210,37 @@ def test_a_word_that_is_neither_a_column_nor_a_function_is_still_an_invalid_colu
         plays.esql.query("SELECT state, nope")
 
 
-def test_count_is_reserved_in_select_even_when_a_column_is_called_count():
-    """The reading cannot depend on the frame, or the same query would mean different things over
-    different data. So the bare word is the row count, and the column is reached by naming it in an
-    aggregate or a condition, where nothing else could be meant."""
+def test_a_frame_with_a_column_called_count_is_refused():
+    """`count` means the row count wherever a column could go, so a column of that name is a word
+    with two readings and no way for a query writer to say which. Preferring one would make
+    `SELECT venue, count` mean different things over different data; preferring the other would put
+    the row count out of reach for that frame alone. The name is refused where it was chosen."""
     data = pd.DataFrame({"state": ["CA", "CA"], "count": [7, 7]})
-    assert data.esql.query("SELECT state, count")["count"].iloc[0] == 2  # rows, not the column
-    assert data.esql.query("SELECT state, count.count")["count.count"].iloc[0] == 1  # one distinct 7
-    assert data.esql.query("SELECT state, count.sum")["count.sum"].iloc[0] == 14
-    assert len(data.esql.query("SELECT state, count WHERE count > 5")) == 1
+    with pytest.raises(ParsingError, match="Rename the column in the data"):
+        data.esql.query("SELECT state")
 
 
-def test_a_column_named_for_another_function_stays_projectable():
-    """Only the bare forms are reserved. `sum` is not one, so a column of that name is still a
-    grouping attribute -- the check that refuses `SELECT state, sum` runs only once the word has
-    failed to name a column."""
+def test_the_frame_is_refused_before_any_query_is_read():
+    """At the accessor, not at the reference: a query that never writes the word is refused too,
+    which is what makes the message about the data rather than about the query."""
+    data = pd.DataFrame({"state": ["CA"], "count": [7]})
+    with pytest.raises(ParsingError, match="named after the aggregate"):
+        data.esql.validate("SELECT state")
+    with pytest.raises(ParsingError, match="named after the aggregate"):
+        data.esql  # noqa: B018 -- constructing the accessor is where the check runs
+
+
+@pytest.mark.parametrize("spelling", ["Count", "COUNT"])
+def test_the_reserved_name_is_refused_in_any_case(spelling: str):
+    """Identifiers fold case, so a differently cased column is the same collision."""
+    with pytest.raises(ParsingError, match=f"Column '{spelling}'"):
+        pd.DataFrame({"state": ["CA"], spelling: [7]}).esql.query("SELECT state")
+
+
+def test_a_column_named_for_another_function_is_left_alone():
+    """Only a name that can be a whole aggregate is reserved. `sum` is never one on its own, so it
+    has a single reading as a column and the frame is accepted: `SELECT state, sum` projects it, and
+    the refusal for a missing column runs only once the word has failed to name one."""
     data = pd.DataFrame({"state": ["CA"], "sum": [7]})
     assert list(data.esql.query("SELECT state, sum").columns) == ["state", "sum"]
+    assert data.esql.query("SELECT state, sum.sum")["sum.sum"].iloc[0] == 7
