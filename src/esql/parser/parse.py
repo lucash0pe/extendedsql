@@ -58,7 +58,7 @@ def _build_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:
     column_dtypes = data.dtypes.to_dict()
     keyword_clauses = get_keyword_clauses(query)
 
-    parsed_over_clause = parse_over_clause(over_clause=keyword_clauses["OVER"])
+    parsed_over_clause = parse_over_clause(over_clause=keyword_clauses["OVER"], column_dtypes=column_dtypes)
 
     parsed_select_clause = parse_select_clause(
         select_clause=keyword_clauses["SELECT"], groups=parsed_over_clause, column_dtypes=column_dtypes

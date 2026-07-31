@@ -133,20 +133,29 @@ def test_get_keyword_clauses_raises_error_for_missing_arguments_after_select():
 ###########################################################################
 # PARSE_OVER_CLAUSE TESTS
 ###########################################################################
-def test_parse_over_clause_returns_expected_structure():
+def test_parse_over_clause_returns_expected_structure(column_dtypes: dict[str, np.dtype]):
     parsedOverClause = parse_over_clause(
-        over_clause="Apples  ,   132537aaGGG, ___yuetsg___8   ,   728x2fegoql,   GGGGGGHHHHH_____   "
+        over_clause="Apples  ,   132537aaGGG, ___yuetsg___8   ,   728x2fegoql,   GGGGGGHHHHH_____   ",
+        column_dtypes=column_dtypes,
     )
     expected = ["Apples", "132537aaGGG", "___yuetsg___8", "728x2fegoql", "GGGGGGHHHHH_____"]
     assert parsedOverClause == expected
 
 
-def test_parse_over_clause_raises_error_for_invalid_characters():
+def test_parse_over_clause_raises_error_for_invalid_characters(column_dtypes: dict[str, np.dtype]):
     invalid_groups = ["aa)hhhd", "$teven", "#678", "[george]", "wow!"]
     for group in invalid_groups:
         with pytest.raises(ParsingError) as parsingError:
-            parse_over_clause(over_clause=f"{group}")
+            parse_over_clause(over_clause=f"{group}", column_dtypes=column_dtypes)
         assert parsingError.value.error_type == ParsingErrorType.OVER_CLAUSE
+
+
+def test_parse_over_clause_rejects_a_group_named_after_a_column(column_dtypes: dict[str, np.dtype]):
+    """A name cannot be both, or the first thing to the left of a dot reads two ways. Rejected at
+    the declaration, where the query says which names it wants, rather than resolved per reference."""
+    for group in ["quant", "QUANT"]:
+        with pytest.raises(ParsingError, match="names the column"):
+            parse_over_clause(over_clause=group, column_dtypes=column_dtypes)
 
 
 ###########################################################################

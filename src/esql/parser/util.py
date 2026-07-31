@@ -271,7 +271,14 @@ def get_keyword_clauses(query: str) -> dict[str, str | None]:
 ###########################################################################
 # OVER Clause Parsing
 ###########################################################################
-def parse_over_clause(over_clause: str | None) -> list[str]:
+def parse_over_clause(over_clause: str | None, column_dtypes: dict[str, np.dtype]) -> list[str]:
+    """The groups OVER declares, each name checked against the others and against the frame.
+
+    A group name is the query's to choose, with two names it cannot have: one already declared, and
+    one the queried data uses for a column. Both are rejected here rather than resolved later,
+    because the first thing to the left of a dot is read as a group or as a column depending on
+    which it names, and a name that is both makes `g1.count` two readings of one query.
+    """
     groups = []
     # No OVER clause means no groups, not an absent group list. Returning None here made a
     # group-prefixed aggregate written without OVER (`SELECT x, g1.y.sum`) fail the `group not in
@@ -293,8 +300,21 @@ def parse_over_clause(over_clause: str | None) -> list[str]:
                 f"case-insensitive, so these name the same group.",
                 token=group,
             )
+        if column := _column_named(group, column_dtypes):
+            raise ParsingError(
+                ParsingErrorType.OVER_CLAUSE,
+                f"Group '{group}' names the column '{column}', so '{group}.<something>' would read "
+                f"two ways. Pick a group name the data does not use.",
+                token=group,
+            )
         groups.append(group)
     return groups
+
+
+def _column_named(name: str, column_dtypes: dict[str, np.dtype]) -> str | None:
+    """The frame's spelling of the column `name` names, or None. Like `_resolve_column` but with no
+    opinion about ambiguity: any match at all is a collision, so which one it is does not matter."""
+    return next((str(column) for column in column_dtypes if str(column).lower() == name.lower()), None)
 
 
 ###########################################################################
@@ -817,9 +837,9 @@ def _parse_aggregate(
     # Format: column.aggregate_function, or group.count
     if len(parts) == 2:
         written_left, written_function = parts
-        # The bare form is checked first, so `g1.count` is group `g1`'s row count even when a column
-        # is also called `g1`. The group is declared by the query itself, a few words earlier in
-        # OVER, which makes it the more deliberate of the two readings.
+        # A name is a group or a column, never both: `parse_over_clause` rejects a group named after
+        # a column, so this is a lookup rather than a tiebreak. Deciding it here instead -- group
+        # wins, say -- would leave the query legal and its reading dependent on the frame handed in.
         group = _resolve_group(written_left, groups)
         if group is not None and written_function.lower() in BARE_AGGREGATE_FUNCTIONS:
             return GroupAggregate(group=group, column=None, function=written_function.lower())
