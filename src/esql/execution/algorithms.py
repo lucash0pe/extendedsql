@@ -1,18 +1,60 @@
+from typing import Literal, TypedDict, cast
+
 import pandas as pd
 
 from esql.execution.error import RuntimeError
 from esql.execution.grouped_row import Accumulator, CellValue, GroupedRow, ProjectedValue
 from esql.parser.types import (
     AggregatesDict,
+    CompoundAggregateCondition,
+    CompoundCondition,
+    CompoundGroupCondition,
+    EntryValue,
+    GlobalAggregateCondition,
+    GroupAggregate,
+    GroupAggregateCondition,
     LogicalOperator,
+    NotAggregateCondition,
+    NotCondition,
+    NotGroupCondition,
+    ParsedCondition,
     ParsedHavingClause,
     ParsedSelectClause,
     ParsedSuchThatClause,
+    ParsedSuchThatSection,
     ParsedWhereClause,
+    SemiJoinCondition,
+    SimpleCondition,
+    SimpleGroupCondition,
     SortTerm,
     aggregate_key,
 )
 from esql.parser.util import find_group_in_such_that_section
+
+
+class ResolvedSemiJoinCondition(TypedDict):
+    """What `_resolve_semi_joins` leaves where a `SemiJoinCondition` was: the key values its inner
+    condition matched, already computed.
+
+    It is not a parsed shape, which is why it lives here and not in `parser/types.py`. A HAS node
+    asks about the whole table rather than about the row in hand, so it cannot be answered during
+    the per-row walk; resolving it up front is what lets `_evaluate_condition` stay an ordinary
+    walk, and this is the node that walk actually meets.
+    """
+
+    key: str
+    operator: Literal["HAS"]
+    key_set: set[CellValue]
+
+
+EvaluableCondition = ParsedCondition | ResolvedSemiJoinCondition
+"""What `_evaluate_condition` takes: a parsed condition with its HAS nodes resolved.
+
+`ParsedCondition` is the interchangeability of the two parsed hierarchies (see its definition);
+this adds the one node kind that only exists after resolution. Every tree handed to the evaluator
+has been through `_resolve_semi_joins` (the WHERE clause) or `_bind_entry_values` (a SUCH THAT
+section) or neither, and none of those passes introduces anything else.
+"""
 
 
 def build_grouped_table(
@@ -109,11 +151,11 @@ def build_grouped_table(
 # SUCH THAT Accumulation
 ###############################################################################
 def _accumulate_by_row(
-    section: dict,
-    aggregates: list,
+    section: ParsedSuchThatSection,
+    aggregates: list[GroupAggregate],
     grouped_rows: dict[tuple, GroupedRow],
     grouping_attributes: list[str],
-    datatable: list[list],
+    datatable: list[list[CellValue]],
     column_indices: dict[str, int],
 ) -> None:
     """Feed each row the section matches into the grouped row it belongs to.
@@ -136,10 +178,10 @@ def _accumulate_by_row(
 
 
 def _accumulate_by_entry_value(
-    section: dict,
-    aggregates: list,
+    section: ParsedSuchThatSection,
+    aggregates: list[GroupAggregate],
     grouped_rows: dict[tuple, GroupedRow],
-    datatable: list[list],
+    datatable: list[list[CellValue]],
     column_indices: dict[str, int],
 ) -> None:
     """Feed each row the section matches into the grouped row whose entry values it was matched
@@ -163,17 +205,20 @@ def _accumulate_by_entry_value(
                 grouped_row.update_data_map(aggregate=aggregate, row=datatable_row)
 
 
-def _has_entry_value(condition: dict) -> bool:
-    if condition.get("is_emf"):
-        return True
+def _has_entry_value(condition: ParsedSuchThatSection) -> bool:
+    if "is_emf" in condition:
+        return cast(SimpleGroupCondition, condition)["is_emf"]
     if "conditions" in condition:
-        return any(_has_entry_value(sub_condition) for sub_condition in condition["conditions"])
+        compound = cast(CompoundGroupCondition, condition)
+        return any(_has_entry_value(sub_condition) for sub_condition in compound["conditions"])
     if "condition" in condition:
-        return _has_entry_value(condition["condition"])
+        return _has_entry_value(cast(NotGroupCondition, condition)["condition"])
     return False
 
 
-def _bind_entry_values(condition: dict, entry_values: dict[str, CellValue]) -> dict:
+def _bind_entry_values(
+    condition: ParsedSuchThatSection, entry_values: dict[str, Accumulator]
+) -> ParsedSuchThatSection:
     """Replace every entry value with the literal the grouped row being computed holds for it.
 
     The same shape as `_resolve_semi_joins`: a condition that is not a question about the row in
@@ -181,29 +226,37 @@ def _bind_entry_values(condition: dict, entry_values: dict[str, CellValue]) -> d
     `_evaluate_condition` needs to know nothing about entry values. Returns a new condition tree,
     leaving the parsed AST alone so it stays reusable across the other grouped rows.
     """
-    if condition.get("is_emf"):
-        entry_value = condition["value"]
-        value = entry_values.get(entry_value["attribute"])
+    if "is_emf" in condition:
+        leaf = cast(SimpleGroupCondition, condition)
+        if not leaf["is_emf"]:
+            return condition
+        entry_value = cast(EntryValue, leaf["value"])
+        # An entry value can only name a SELECT grouping attribute (the parser refuses anything
+        # else), and a grouping attribute's slot holds the row's own cell for it, set before any
+        # aggregate touches the map. So this read is a plain value, never an accumulating shape.
+        value = cast(CellValue | None, entry_values.get(entry_value["attribute"]))
         # A blank grouping cell has nothing to offset. It stays missing, and a comparison against a
         # missing operand reads as not-true in _evaluate_actual_vs_expected_value.
         if entry_value["delta"] and not _is_missing(value):
-            value = value + entry_value["delta"]
-        return {**condition, "value": value, "is_emf": False}
+            value = cast(float, value) + entry_value["delta"]
+        return cast(SimpleGroupCondition, {**leaf, "value": value, "is_emf": False})
 
     if "conditions" in condition:
-        return {
-            **condition,
-            "conditions": [
+        compound = cast(CompoundGroupCondition, condition)
+        return CompoundGroupCondition(
+            operator=compound["operator"],
+            conditions=[
                 _bind_entry_values(condition=sub_condition, entry_values=entry_values)
-                for sub_condition in condition["conditions"]
+                for sub_condition in compound["conditions"]
             ],
-        }
+        )
 
     if "condition" in condition:
-        return {
-            **condition,
-            "condition": _bind_entry_values(condition=condition["condition"], entry_values=entry_values),
-        }
+        negation = cast(NotGroupCondition, condition)
+        return NotGroupCondition(
+            operator=negation["operator"],
+            condition=_bind_entry_values(condition=negation["condition"], entry_values=entry_values),
+        )
 
     return condition
 
@@ -223,7 +276,9 @@ def _is_missing(value) -> bool:
         return False
 
 
-def _resolve_semi_joins(condition: dict, datatable: list[list], column_indices: dict[str, int]) -> dict:
+def _resolve_semi_joins(
+    condition: ParsedWhereClause, datatable: list[list[CellValue]], column_indices: dict[str, int]
+) -> EvaluableCondition:
     """Replace every HAS node with the concrete set of key values its inner condition matched.
 
     A semi-join asks about the whole table ("which key values have a row satisfying this"), not
@@ -236,11 +291,12 @@ def _resolve_semi_joins(condition: dict, datatable: list[list], column_indices: 
     Returns a new condition tree; the parsed AST is left alone so it stays reusable.
     """
     if "key" in condition:
-        key_index = column_indices.get(condition["key"])
+        semi_join = cast(SemiJoinCondition, condition)
+        key_index = column_indices.get(semi_join["key"])
         if key_index is None:
-            raise RuntimeError(f"Column '{condition['key']}' not found in datatable")
+            raise RuntimeError(f"Column '{semi_join['key']}' not found in datatable")
         inner_condition = _resolve_semi_joins(
-            condition=condition["condition"], datatable=datatable, column_indices=column_indices
+            condition=semi_join["condition"], datatable=datatable, column_indices=column_indices
         )
         # A row with a missing key contributes no key value, mirroring how a missing operand
         # compares as not-true in _evaluate_actual_vs_expected_value.
@@ -250,95 +306,121 @@ def _resolve_semi_joins(condition: dict, datatable: list[list], column_indices: 
             if not _is_missing(row[key_index])
             and _evaluate_condition(condition=inner_condition, row=row, column_indices=column_indices)
         }
-        return {"key": condition["key"], "operator": condition["operator"], "key_set": key_set}
+        return ResolvedSemiJoinCondition(key=semi_join["key"], operator=semi_join["operator"], key_set=key_set)
 
+    # A branch node keeps its shape and swaps its children, which is the one thing resolution
+    # changes about it: a child may now be a `ResolvedSemiJoinCondition`. Declaring that would take
+    # a parallel hierarchy of branch types whose only difference is the element type, so it is a
+    # cast with the reason written here instead. `EvaluableCondition` is what the walk downstream
+    # reads, and it admits either child.
     if "conditions" in condition:
-        return {
-            **condition,
-            "conditions": [
-                _resolve_semi_joins(condition=sub_condition, datatable=datatable, column_indices=column_indices)
-                for sub_condition in condition["conditions"]
-            ],
-        }
+        compound = cast(CompoundCondition, condition)
+        return cast(
+            EvaluableCondition,
+            {
+                **compound,
+                "conditions": [
+                    _resolve_semi_joins(condition=sub_condition, datatable=datatable, column_indices=column_indices)
+                    for sub_condition in compound["conditions"]
+                ],
+            },
+        )
 
     if "condition" in condition:
-        return {
-            **condition,
-            "condition": _resolve_semi_joins(
-                condition=condition["condition"], datatable=datatable, column_indices=column_indices
-            ),
-        }
+        negation = cast(NotCondition, condition)
+        return cast(
+            EvaluableCondition,
+            {
+                **negation,
+                "condition": _resolve_semi_joins(
+                    condition=negation["condition"], datatable=datatable, column_indices=column_indices
+                ),
+            },
+        )
 
     return condition
 
 
-def _evaluate_condition(condition: dict, row: list, column_indices: dict[str, int]) -> bool:
-    operator = condition.get("operator")
+def _evaluate_condition(condition: EvaluableCondition, row: list[CellValue], column_indices: dict[str, int]) -> bool:
+    operator = condition["operator"]
     if "key_set" in condition:
-        key_value = row[column_indices[condition["key"]]]
+        semi_join = cast(ResolvedSemiJoinCondition, condition)
+        key_value = row[column_indices[semi_join["key"]]]
         # A missing key belongs to no group, so it drops rather than raising.
-        return not _is_missing(key_value) and key_value in condition["key_set"]
+        return not _is_missing(key_value) and key_value in semi_join["key_set"]
 
     if "column" in condition:
+        # A `column` key means a leaf, which is a `SimpleCondition` or the `SimpleGroupCondition`
+        # that inherits it; the narrowing covers both, which is the point of that one inheritance.
+        leaf = cast(SimpleCondition, condition)
         # Only _accumulate_by_entry_value knows which grouped row an entry value should read, so an
         # unbound one reaching here means the section took the wrong pass. Comparing against the
         # reference itself would silently match nothing rather than say so.
-        if condition.get("is_emf"):
+        if leaf["is_emf"]:
             raise RuntimeError(f"Entry value was not bound to a grouped row: '{condition}'")
 
-        column = condition.get("column")
-        condition_value = condition.get("value")
-        column_index = column_indices.get(column)
+        column_index = column_indices.get(leaf["column"])
         if column_index is None:
-            raise RuntimeError(f"Column '{column}' not found in datatable")
+            raise RuntimeError(f"Column '{leaf['column']}' not found in datatable")
         actual_value = row[column_index]
+        # `is_emf` is False here, so `value` is a literal rather than an `EntryValue`. The two share
+        # a slot because a condition is parsed before it is known which pass will answer it.
         return _evaluate_actual_vs_expected_value(
-            actual_value=actual_value, operator=operator, condition_value=condition_value
+            actual_value=actual_value,
+            operator=leaf["operator"],
+            condition_value=cast(CellValue, leaf["value"]),
         )
 
     if operator == LogicalOperator.AND:
         return all(
             _evaluate_condition(condition=and_condition, row=row, column_indices=column_indices)
-            for and_condition in condition.get("conditions", [])
+            for and_condition in cast(CompoundCondition | CompoundGroupCondition, condition)["conditions"]
         )
     elif operator == LogicalOperator.OR:
         return any(
             _evaluate_condition(condition=or_condition, row=row, column_indices=column_indices)
-            for or_condition in condition.get("conditions", [])
+            for or_condition in cast(CompoundCondition | CompoundGroupCondition, condition)["conditions"]
         )
     elif operator == LogicalOperator.NOT:
-        return not _evaluate_condition(condition=condition.get("condition"), row=row, column_indices=column_indices)
+        negation = cast(NotCondition | NotGroupCondition, condition)
+        return not _evaluate_condition(condition=negation["condition"], row=row, column_indices=column_indices)
     else:
         raise RuntimeError(f"Unknown logical operator: {operator}")
 
 
 def _evaluate_having_clause(condition: ParsedHavingClause, data_map: dict[str, Accumulator]) -> bool:
-    operator = condition.get("operator")
+    operator = condition["operator"]
     if operator == LogicalOperator.NOT:
-        return not _evaluate_having_clause(condition=condition.get("condition"), data_map=data_map)
+        negation = cast(NotAggregateCondition, condition)
+        return not _evaluate_having_clause(condition=negation["condition"], data_map=data_map)
 
     if "conditions" in condition:
+        compound = cast(CompoundAggregateCondition, condition)
         if operator == LogicalOperator.AND:
             return all(
                 _evaluate_having_clause(condition=and_condition, data_map=data_map)
-                for and_condition in condition["conditions"]
+                for and_condition in compound["conditions"]
             )
         elif operator == LogicalOperator.OR:
             return any(
                 _evaluate_having_clause(condition=or_condition, data_map=data_map)
-                for or_condition in condition["conditions"]
+                for or_condition in compound["conditions"]
             )
         else:
             raise RuntimeError(f"Unknown logical operator in HAVING clause: '{operator}'")
 
-    condition_aggregate = condition.get("aggregate")
+    comparison = cast(GlobalAggregateCondition | GroupAggregateCondition, condition)
+    condition_aggregate = comparison["aggregate"]
     if "function" not in condition_aggregate:
         raise RuntimeError(f"Could not recognize the condition in the HAVING clause: '{condition}'")
 
     return _evaluate_actual_vs_expected_value(
-        actual_value=data_map.get(aggregate_key(condition_aggregate)),
-        operator=operator,
-        condition_value=condition.get("value"),
+        # `build_grouped_table` finalizes every data map before it evaluates HAVING, and finalizing
+        # is what turns the two accumulating shapes into answers (a set into its size, a
+        # sum/count pair into the quotient). So a slot read here is a plain value or absent.
+        actual_value=cast(ProjectedValue, data_map.get(aggregate_key(condition_aggregate))),
+        operator=comparison["operator"],
+        condition_value=comparison["value"],
     )
 
 

@@ -126,15 +126,39 @@ class SemiJoinCondition(TypedDict):
 
 
 class SimpleGroupCondition(SimpleCondition):
+    """A `SimpleCondition` that also names the OVER group it scopes.
+
+    The one real subtype among the group conditions, and the only one written as inheritance: it
+    adds a key rather than restating one, so a SUCH THAT leaf *is* a where-clause leaf and
+    `_evaluate_condition` reads it with the same code by inheriting, not by coincidence.
+    """
+
     group: str
 
 
-class CompoundGroupCondition(CompoundCondition):
-    conditions: list["ParsedSuchThatClause"]
+class CompoundGroupCondition(TypedDict):
+    """AND/OR over SUCH THAT sections. The same *shape* as `CompoundCondition`, not a subtype of it.
+
+    It used to inherit `CompoundCondition` and redeclare `conditions`, which TypedDict forbids for a
+    reason: a `CompoundGroupCondition` is not usable everywhere a `CompoundCondition` is, because
+    its children are group conditions. That claim cost 3 `[misc]` errors and most of the 17
+    `[typeddict-item]` ones, and it was also *wrong about the level*: the redeclaration read
+    `list[ParsedSuchThatClause]`, a list of *lists* of sections, while `_parse_such_that_section`
+    has always put sections here. Nothing caught it because nothing checked it.
+
+    What the two hierarchies actually share is that `_evaluate_condition` walks either one -- see
+    `ParsedCondition` below, which is where that is now written down.
+    """
+
+    operator: Literal[LogicalOperator.AND, LogicalOperator.OR]
+    conditions: list["ParsedSuchThatSection"]
 
 
-class NotGroupCondition(NotCondition):
-    condition: "ParsedSuchThatClause"
+class NotGroupCondition(TypedDict):
+    """NOT over a SUCH THAT section. Standalone for the same reason as `CompoundGroupCondition`."""
+
+    operator: Literal[LogicalOperator.NOT]
+    condition: "ParsedSuchThatSection"
 
 
 class GlobalAggregateCondition(TypedDict):
@@ -143,8 +167,17 @@ class GlobalAggregateCondition(TypedDict):
     value: float
 
 
-class GroupAggregateCondition(GlobalAggregateCondition):
+class GroupAggregateCondition(TypedDict):
+    """A HAVING comparison against a group-scoped aggregate.
+
+    Standalone rather than inheriting `GlobalAggregateCondition` and narrowing `aggregate`, which is
+    the same forbidden override as above. The aggregates themselves *do* inherit
+    (`GroupAggregate(GlobalAggregate)`), because that one adds a key instead of replacing one.
+    """
+
     aggregate: GroupAggregate
+    operator: str
+    value: float
 
 
 class CompoundAggregateCondition(TypedDict):
@@ -167,6 +200,21 @@ ParsedWhereClause = SimpleCondition | CompoundCondition | NotCondition | SemiJoi
 
 ParsedSuchThatSection = SimpleGroupCondition | CompoundGroupCondition | NotGroupCondition
 ParsedSuchThatClause = list[ParsedSuchThatSection]
+
+ParsedCondition = ParsedWhereClause | ParsedSuchThatSection
+"""Any condition tree `algorithms._evaluate_condition` walks: a WHERE clause, or one SUCH THAT
+section.
+
+This is the property the two hierarchies above really share, and it is a property of the
+*evaluator*, not a subtype relationship between the shapes. Both are built from the same three
+node kinds -- a leaf comparing a column, AND/OR over children, NOT over one child -- so one walk
+answers either, which is why `_evaluate_condition` serves the WHERE filter and every SUCH THAT
+section with one function.
+
+Written here so that interchangeability is checked rather than assumed. It used to be asserted by
+`CompoundGroupCondition` inheriting `CompoundCondition`, which claimed something stronger and
+false, and hidden by `_evaluate_condition` taking a bare `dict`, which claimed nothing at all.
+"""
 
 ParsedHavingClause = (
     GlobalAggregateCondition | GroupAggregateCondition | CompoundAggregateCondition | NotAggregateCondition

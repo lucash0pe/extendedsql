@@ -1,5 +1,6 @@
 import re
 from datetime import date, datetime
+from typing import Final
 
 import numpy as np
 import pandas as pd
@@ -104,7 +105,9 @@ OPERATOR_DTYPES = {
 # row satisfying `<condition>`, which is how a query reaches across grains without a join. It is
 # not a comparison and so is not one of CONDITIONAL_OPERATORS: what follows it is a whole
 # condition, not a value.
-SEMI_JOIN_OPERATOR = "HAS"
+# `Final` so the type is `Literal["HAS"]` rather than `str`, which is what `SemiJoinCondition`
+# declares its `operator` to be. Without it the constant and the shape it fills disagree.
+SEMI_JOIN_OPERATOR: Final = "HAS"
 
 # Which operators each clause accepts. WHERE filters raw rows, so it takes everything. SUCH THAT
 # scopes a group and runs over the same rows, so it takes the comparisons but not the semi-join,

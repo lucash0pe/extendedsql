@@ -468,7 +468,7 @@ were read one by one rather than counted, and one of them was pointing at a live
   `dict[Hashable, Any]` errors that turned this up are narrowed at the one place the dict is built
   rather than silenced at six call sites. The fix and the errors that found it close together.
 
-- [ ] **L5. The condition-tree types claim an inheritance the evaluator does not need.**
+- [x] **L5. The condition-tree types claim an inheritance the evaluator does not need.**
   `CompoundGroupCondition` inherits `CompoundCondition` and overrides `conditions` with a different
   element type, which TypedDict forbids (3 `[misc]`, and most of the 17 `[typeddict-item]` follow
   from it). The thing worth knowing is *why* it is written that way and why it has been harmless:
@@ -482,6 +482,13 @@ were read one by one rather than counted, and one of them was pointing at a live
   interchangeability the code relies on is written down and checked, and the two hierarchies stop
   claiming a subtype relationship neither needs. Cheaper than dataclasses and it documents a real
   property instead of a modelling accident. Worth doing on the G1 reasoning, not for the count.
+
+  **Shipped in v1.16.1, as filed and no dataclasses.** See that entry in the settled record. The
+  filing was right that the inheritance was an attempt to say something true, and it turned out to
+  be **wrong about the level as well as the relationship**: the override declared `conditions` as
+  `list[ParsedSuchThatClause]`, a list of *lists* of sections, while `_parse_such_that_section` has
+  always put sections there. So the one place the two hierarchies were tied together was also the
+  one place the shape was mis-stated, which is the L-stream thesis in miniature.
 
 - [ ] **L6. `make typecheck` reported a count that was eight errors stale, from `.mypy_cache`.**
   Found 2026-08-01 by running the target on a clean checkout of `d03f2b0` and getting **66**, then
@@ -1396,6 +1403,59 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `GRAMMAR` key changes. `NON_STRING_COLUMN` is a new `ParsingErrorType`, which reaches a host only
   as the `[NON-STRING COLUMN]` prefix on an error string; the demo hands the accessor frames read
   from its own CSVs, whose labels are strings.
+
+## v1.16.1 — one walk, named (2026-08-01)
+
+- [x] **L5.** The condition types stop claiming a subtype relationship and start naming the property
+  the evaluator relies on. Bumped `1.16.0 -> 1.16.1`; the gate is green at **451 tests** (was 446).
+  **25 errors (was 53)**, no behavior change.
+
+  **What the inheritance was covering, and what it got wrong.** `CompoundGroupCondition` inherited
+  `CompoundCondition` and redeclared `conditions`; `NotGroupCondition` and `GroupAggregateCondition`
+  did the same to their bases. TypedDict forbids the override for a good reason -- a group condition
+  is not usable everywhere a where-clause condition is, because its children are group conditions --
+  and those three lines cost 3 `[misc]` plus most of the 17 `[typeddict-item]`. They were also
+  **wrong about the level**: `conditions` was declared `list[ParsedSuchThatClause]`, a list of
+  *lists* of sections, against a parser that has always put sections there. The one place the two
+  hierarchies were tied together was the one place the shape was mis-stated, and nothing caught it
+  because `_evaluate_condition` was declared `condition: dict`, which claims nothing.
+
+  **What replaces it.** `ParsedCondition = ParsedWhereClause | ParsedSuchThatSection`, which says
+  what is actually shared: both trees are built from the same three node kinds, so one walk answers
+  either. `_evaluate_condition` takes `EvaluableCondition` -- that union plus
+  `ResolvedSemiJoinCondition`, the node only `_resolve_semi_joins` produces. That second type is new
+  and lives in `execution/`, not `parser/`: a resolved HAS node is not a parsed shape, and saying so
+  is what keeps the parser from depending on execution. `SimpleGroupCondition(SimpleCondition)`
+  stays, because it **adds** a key rather than replacing one, and that one real subtype is why the
+  evaluator's leaf branch serves both trees without knowing which it has.
+
+  **The bodies are cast, not ignored, and that is a deliberate line.** mypy does not narrow a union
+  of TypedDicts on `"key" in condition`, and these walkers dispatch on exactly that. The choice was
+  one `cast` per branch (12 of them, each a one-line statement of which node kind carries which key)
+  against roughly 40 `# type: ignore`s. A cast states the invariant; an ignore only silences the
+  complaint. Two of them carry an invariant worth reading rather than a shape: the HAVING evaluator
+  reads a data map that `build_grouped_table` has already finalized, so a slot there is an answer
+  and not an accumulator; and an entry value can only name a SELECT grouping attribute, whose slot
+  holds the row's own cell, so binding never meets an accumulating shape either.
+
+  The two branch-node casts in `_resolve_semi_joins` are the one place the types stay loose on
+  purpose. Resolution keeps a node's shape and changes only its children's type, so declaring it
+  exactly would take a parallel hierarchy of branch types differing in nothing else. The reason is
+  written at the cast rather than left for the next reader to rediscover.
+
+  **`SEMI_JOIN_OPERATOR` is now `Final`,** so its type is `Literal["HAS"]` rather than `str` and it
+  agrees with the `SemiJoinCondition` slot it fills. A one-word fix for a disagreement between a
+  constant and the shape built from it.
+
+  Covered by `tests/parser/test_condition_shapes.py` (5 tests), which binds the shape half: a
+  compound section holds sections rather than lists (the level the old annotation got wrong), a
+  group leaf is a where leaf plus `group`, and `_evaluate_condition` is called with one of each and
+  answers both. The type half is bound by `make typecheck`, which is what L6 wires into the gate.
+  Verified the path is live rather than incidentally green: forcing `_has_entry_value` to return
+  False fails 12 tests.
+
+  **Portfolio-side follow-up: none.** No export, no `GRAMMAR` key, no behavior, no parsed shape
+  changed -- only what the declarations say about it.
 
 ## 3. Engine-side prep for the ESQL demo
 
