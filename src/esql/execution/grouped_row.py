@@ -1,8 +1,30 @@
 from datetime import date
+from typing import Any
 
 import pandas as pd
 
 from esql.parser.types import AggregatesDict, GlobalAggregate, GroupAggregate, aggregate_key
+
+CellValue = str | int | float | bool | date
+"""A value as the frame holds it: what a row cell contains, and what a grouping attribute is.
+
+`float` is in here because a float column is ordinary -- a duration in seconds, a price -- and it
+is also what an avg finishes as.
+"""
+
+Accumulator = CellValue | set[CellValue] | dict[str, Any]
+"""What a `_data_map` slot holds, which is not always an answer.
+
+Two of the functions accumulate a shape rather than a running value, and `finalize_data_map` is
+what turns each into the number the query asked for: a **column count** accumulates the *set* of
+distinct values and finishes as its size, an **avg** accumulates a running `{"sum", "count"}` and
+finishes as the quotient. So a slot is a plain `CellValue` only before those two have touched it,
+or after that pass has run.
+"""
+
+ProjectedValue = CellValue | None
+"""A finished value on its way to the caller. `None` when a select item names something the
+grouped row holds no value for, which comes back as a blank cell rather than raising."""
 
 
 class GroupedRow:
@@ -15,14 +37,14 @@ class GroupedRow:
         self,
         grouping_attributes: list[str],
         aggregates: AggregatesDict,
-        initial_row: list[str | int | bool | date],
+        initial_row: list[CellValue],
         column_indices: dict[str, int],
     ):
         self.grouping_attributes = grouping_attributes
         self.aggregates = aggregates
         self._initial_row = initial_row
         self._column_indices = column_indices
-        self._data_map: dict[str, str | int | bool | date] = {}
+        self._data_map: dict[str, Accumulator] = {}
         self._build_data_map()
 
     def _build_data_map(self) -> None:
@@ -38,7 +60,7 @@ class GroupedRow:
         for aggregate in self.aggregates["global_scope"]:
             self.update_data_map(aggregate=aggregate, row=self._initial_row)
 
-    def update_data_map(self, aggregate: GlobalAggregate | GroupAggregate, row: list[str | int | bool | date]) -> None:
+    def update_data_map(self, aggregate: GlobalAggregate | GroupAggregate, row: list[CellValue]) -> None:
         """Fold one row into one aggregate's running value.
 
         `count` accumulates rather than adds up, in two different ways. The **row count** (`count`,
@@ -46,12 +68,18 @@ class GroupedRow:
         A **column count** (`quant.count`) counts the column's *distinct* values, so it accumulates
         the set of them and `finalize_data_map` takes its size; a missing value is not a value, and
         is skipped like it is for every other function.
+
+        The ignores below are one sharp edge left sharp. Each branch knows the slot's shape because
+        `function` is what put it there -- a `sum` slot holds what a previous `sum` wrote, an `avg`
+        slot the running `{"sum", "count"}` -- but that ties a *value* to a *type*, which mypy
+        cannot follow, so it offers every member of `Accumulator` instead. Typing the slot `Any`
+        would silence these and every real error here with them.
         """
         function = aggregate["function"]
         key = aggregate_key(aggregate)
 
         if aggregate["column"] is None:
-            self._data_map[key] = self._data_map.get(key, 0) + 1
+            self._data_map[key] = self._data_map.get(key, 0) + 1  # type: ignore[operator]
             return
 
         value = row[self._column_indices[aggregate["column"]]]
@@ -59,23 +87,23 @@ class GroupedRow:
             return
 
         if function == "count":
-            self._data_map.setdefault(key, set()).add(value)
+            self._data_map.setdefault(key, set()).add(value)  # type: ignore[union-attr]
         elif key not in self._data_map:
             if function in ["sum", "min", "max"]:
                 self._data_map[key] = value
             elif function == "avg":
                 self._data_map[key] = {"sum": value, "count": 1}
         elif function == "sum":
-            self._data_map[key] += value
+            self._data_map[key] += value  # type: ignore[operator]
         elif function == "min":
-            if value < self._data_map[key]:
+            if value < self._data_map[key]:  # type: ignore[operator]
                 self._data_map[key] = value
         elif function == "max":
-            if value > self._data_map[key]:
+            if value > self._data_map[key]:  # type: ignore[operator]
                 self._data_map[key] = value
         elif function == "avg":
             values = self._data_map[key]
-            self._data_map[key] = {"sum": values["sum"] + value, "count": values["count"] + 1}
+            self._data_map[key] = {"sum": values["sum"] + value, "count": values["count"] + 1}  # type: ignore[index]
 
     # This must be called on all GroupedRows after they have been filtered by the WHERE and SUCH THAT clauses
     def finalize_data_map(self) -> None:
@@ -94,7 +122,7 @@ class GroupedRow:
                 self._data_map[key] = value["sum"] / value["count"]
 
     @property
-    def data_map(self):
+    def data_map(self) -> dict[str, Accumulator]:
         return self._data_map
 
     def __str__(self):

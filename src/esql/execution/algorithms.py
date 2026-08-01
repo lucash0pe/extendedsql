@@ -3,7 +3,7 @@ from datetime import date
 import pandas as pd
 
 from esql.execution.error import RuntimeError
-from esql.execution.grouped_row import GroupedRow
+from esql.execution.grouped_row import Accumulator, CellValue, GroupedRow, ProjectedValue
 from esql.parser.types import (
     AggregatesDict,
     LogicalOperator,
@@ -172,7 +172,7 @@ def _has_entry_value(condition: dict) -> bool:
     return False
 
 
-def _bind_entry_values(condition: dict, entry_values: dict[str, str | int | bool | date]) -> dict:
+def _bind_entry_values(condition: dict, entry_values: dict[str, CellValue]) -> dict:
     """Replace every entry value with the literal the grouped row being computed holds for it.
 
     The same shape as `_resolve_semi_joins`: a condition that is not a question about the row in
@@ -311,7 +311,7 @@ def _evaluate_condition(condition: dict, row: list, column_indices: dict[str, in
         raise RuntimeError(f"Unknown logical operator: {operator}")
 
 
-def _evaluate_having_clause(condition: ParsedHavingClause, data_map: dict[str, str | int | bool | date]) -> bool:
+def _evaluate_having_clause(condition: ParsedHavingClause, data_map: dict[str, Accumulator]) -> bool:
     operator = condition.get("operator")
     if operator == LogicalOperator.NOT:
         return not _evaluate_having_clause(condition=condition.get("condition"), data_map=data_map)
@@ -342,7 +342,7 @@ def _evaluate_having_clause(condition: ParsedHavingClause, data_map: dict[str, s
 
 
 def _evaluate_actual_vs_expected_value(
-    actual_value: str | int | bool | date | None, operator: str, condition_value: str | int | bool | date
+    actual_value: CellValue | None, operator: str, condition_value: CellValue
 ) -> bool:
     # SQL NULL semantics: a comparison with a missing operand is not true, so the row drops from
     # the result instead of raising. Two sources of a missing operand: a blank cell in the data
@@ -357,14 +357,21 @@ def _evaluate_actual_vs_expected_value(
         return False
     if operator in ["=", "=="]:
         return actual_value == condition_value
+    # The four ordering comparisons are deliberately un-narrowed, and the ignores are the sharp edge
+    # left sharp rather than papered over with `Any`, which would also silence a real error here.
+    # Both operands are the same dtype family by the time they arrive: the parser reads a comparison
+    # value as its column's own kind (v1.12.0), and ordering on a string or bool column is refused
+    # outright before execution (v1.11.0, and it is the published `GRAMMAR["operators"]["dtypes"]`
+    # table). mypy sees neither guarantee, so it cross-products the union and reports every pairing
+    # the parser has already ruled out. Narrowing here would restate that table in a third place.
     elif operator == ">":
-        return actual_value > condition_value
+        return actual_value > condition_value  # type: ignore[operator]
     elif operator == "<":
-        return actual_value < condition_value
+        return actual_value < condition_value  # type: ignore[operator]
     elif operator == ">=":
-        return actual_value >= condition_value
+        return actual_value >= condition_value  # type: ignore[operator]
     elif operator == "<=":
-        return actual_value <= condition_value
+        return actual_value <= condition_value  # type: ignore[operator]
     elif operator == "!=":
         return actual_value != condition_value
     elif operator == "CONTAINS":
@@ -381,7 +388,7 @@ def _evaluate_actual_vs_expected_value(
 ###############################################################################
 def project_select_attributes(
     parsed_select_clause: ParsedSelectClause, grouped_table: list[GroupedRow], decimal_places: int
-) -> list[dict[str, str | int | bool | date]]:
+) -> list[dict[str, ProjectedValue]]:
     select_items = parsed_select_clause["select_items_in_order"]
     projected_table = []
     for grouped_row in grouped_table:
@@ -404,8 +411,8 @@ def _sort_key(value):
 
 
 def order_by_sort(
-    projected_table: list[dict[str, str | int | bool | date]], order_by: list[SortTerm]
-) -> list[dict[str, str | int | bool | date]]:
+    projected_table: list[dict[str, ProjectedValue]], order_by: list[SortTerm]
+) -> list[dict[str, ProjectedValue]]:
     """Sort the projected rows by each term, outermost first.
 
     One pass per term, applied from the innermost key outwards, which is the standard way to get a
