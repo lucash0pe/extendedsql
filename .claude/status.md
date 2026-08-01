@@ -395,6 +395,40 @@ patched twice.
 
 ---
 
+## Stream L — claims the type system makes
+
+Opened 2026-07-31, and closed the same day by v1.15.1. Findings from asking why `make typecheck`
+reported 152 errors when the suite was green. The answer is that **the count was never a count of
+problems** (61 lines produced 153 errors, because comparing two union-typed operands reports every
+illegal pairing), but two of the things it was pointing at were real, and both are the shape this
+repo keeps finding: **a claim written down that nothing binds, which is therefore free to be false.**
+
+The type annotations were the last unbound claim surface. `GRAMMAR` is bound to the parser (G1),
+`syntax.md` is bound to `GRAMMAR` (G2), and `literals.text.summary` was bound after J5 caught it
+lying. A type annotation is the same kind of statement -- it says what a value is -- and until
+`typecheck` is clean nothing checks it, so it drifts exactly like prose does.
+
+- [x] **L1. `_data_map`'s annotation was false, and its own release made it false.** Shipped in
+  v1.15.0 before merge; see that entry in the settled record. The slot was declared
+  `dict[str, str | int | bool | date]` while holding a `set` (the distinct count v1.15.0 had just
+  added), a running `{"sum", "count"}` dict, and floats. The union was also wrong about `float` at
+  all nine sites that spelled it out, which is older: a float column is ordinary, so `quant.sum`
+  over one always returned a value the type called impossible.
+
+- [x] **L2. Two `__eq__` methods that never ran, on the types the aggregate merge compares.**
+  Shipped in v1.15.1; see that entry in the settled record. Same shape as **K2**'s dead `A or B`
+  defaults -- a line that looks like it selects behavior and does not -- but sitting on the code path
+  whose bug was BUG-8's silent doubling, which makes it worth more than tidiness.
+
+**What to look for next, since this is now the third instance.** K2, L1 and L2 are all *a second
+statement of a rule that no longer had to agree with the first*. The remaining mypy clusters are
+the same bet: 30 `[arg-type]` and 17 `[typeddict-item]` say the parsed-condition shapes are modelled
+in a way the code does not follow, which the mypy item above proposes fixing by moving them from
+TypedDicts to dataclasses. That is worth doing for the reason G1 was worth doing, not for the error
+count.
+
+---
+
 ## Toolchain note — always `uv run python -m <tool>`
 
 `uv run pytest` does **not** run this project's pytest. The console script fails to spawn under the
@@ -1191,6 +1225,41 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   dataset with a `count` column now fails its build with that message rather than at query time. They still parse, so nothing fails loudly; `esql-smoke` compares against the SQL
   equivalent and is what catches them. Land it with D1 as filed. The result table must also read
   `forms` rather than looking for a dot, or a bare `count` column is filed as a dimension.
+
+## v1.15.1 — two `__eq__` methods that never ran (2026-07-31)
+
+- [x] **L2, which closes Stream L.** `GlobalAggregate` and `GroupAggregate` each carried an `__eq__`
+  comparing a chosen subset of their keys. Neither ever ran. Bumped `1.15.0 -> 1.15.1`; the gate is
+  green at **436 tests** (was 428). No behavior change, by construction: the methods were unreachable
+  before and are absent now.
+
+  **Why they could not run.** A TypedDict is not a class with methods. `GlobalAggregate(...)`
+  constructs a plain `dict`, so `type(instance)` is `dict` and Python resolves `==` on `dict`; the
+  function object sits on a type nothing is ever an instance of. They would have raised
+  `AttributeError` if they had, since they used `self.column` attribute access on what is a dict.
+
+  **Why it was worth more than tidiness.** They sat on the comparison the SELECT/HAVING merge in
+  `_build_parsed_query` performs -- `if aggregate not in aggregates[scope]` is a membership test and
+  therefore an equality test -- and that merge is BUG-8's fix from v1.1. So the file declaring the
+  aggregate shapes stated a rule for how aggregates compare, on the path where getting it wrong
+  silently doubles a sum, and the rule was both dead and *wrong*: `GlobalAggregate.__eq__` ignored
+  `group`, while the dict equality that actually runs compares every key.
+
+  **The gap the tamper test found, which is the part worth recording.** The first cut asserted the
+  two dicts unequal and asserted the merge dedups. Reinstating the dead semantics as a *live* merge
+  rule -- dedup on `column` and `function`, ignoring `group` -- **passed all seven tests**. Asserting
+  two values are unequal proves nothing about a comparison that never consults them. The case that
+  bites is two group aggregates in one query (`g1.quant.sum` and `g2.quant.sum`, which scope to
+  different rows), and there was no such query in the file. There is now, and it fails under that
+  tamper. Global and group aggregates cannot collide this way at all, since they live in separate
+  scope lists and are never compared, so `group_specific` is the only place `group` carries weight.
+
+  Covered by `tests/parser/test_aggregate_identity.py` (8 tests), which pins the equality that *runs*
+  rather than the one that was written down. Verified three ways: removing the dedup guard fails 2,
+  the ignore-`group` tamper above fails 1, and **putting the deleted `__eq__` back verbatim passes**,
+  which is the evidence that deleting it is a no-op rather than an assertion that it is.
+
+  **Portfolio-side follow-up: none.** No export, no new name, no `GRAMMAR` key, no behavior.
 
 ## 3. Engine-side prep for the ESQL demo
 

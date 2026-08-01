@@ -12,20 +12,22 @@ class GlobalAggregate(TypedDict):
     aggregate that names no column: it asks how many rows the group holds, and every row holds
     itself. Every other function needs a column, and `column.count` counts that column's *distinct*
     values, so a column named in an aggregate always bears on the answer.
+
+    Two of these are equal when their keys are, which is plain dict equality: a TypedDict *is* a
+    `dict` at runtime, so it carries no identity of its own. That is what the SELECT/HAVING merge in
+    `_build_parsed_query` compares, and `tests/parser/test_aggregate_identity.py` pins it. This class
+    used to define an `__eq__` that ignored `group`; it never ran, because no instance is ever of
+    this type, and it disagreed with the equality that does run.
     """
 
     column: str | None
     function: str
 
-    def __eq__(self, other):
-        return self.column == other.column and self.function == other.function
-
 
 class GroupAggregate(GlobalAggregate):
-    group: str
+    """A `GlobalAggregate` scoped to one OVER group, so `group` is part of its identity."""
 
-    def __eq__(self, other):
-        return self.group == other.group and self.column == other.column and self.function == other.function
+    group: str
 
 
 class AggregatesDict(TypedDict):
