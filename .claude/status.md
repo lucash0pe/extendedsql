@@ -477,6 +477,39 @@ were read one by one rather than counted, and one of them was pointing at a live
   claiming a subtype relationship neither needs. Cheaper than dataclasses and it documents a real
   property instead of a modelling accident. Worth doing on the G1 reasoning, not for the count.
 
+- [ ] **L6. `make typecheck` reported a count that was eight errors stale, from `.mypy_cache`.**
+  Found 2026-08-01 by running the target on a clean checkout of `d03f2b0` and getting **66**, then
+  getting **58** from the same tree after `rm -rf .mypy_cache`. Nothing was edited in between.
+
+  **What makes it worth an item rather than a shrug is what the stale errors said.** Two of them
+  named `build_grouped_table` as declaring `parsed_such_that_clause` non-optional — the exact claim
+  **L4 had already deleted**, against a signature that reads `ParsedSuchThatClause | None` in the
+  tree. So the target did not merely over-count: it reported a specific, plausible, checkable defect
+  that had been fixed, naming a line and a type. Read in good faith it sends you to fix something
+  already correct, which is worse than a wrong total.
+
+  **This is the third stale count in this repo, and the first two are already recorded above.** The
+  number was stale at 143 for however long `make typecheck` was calling `uv run mypy` (fixed in
+  v1.5.0), and the backlog item's **68 / 30 / 17 / 6** was stale the moment L4 landed. Three
+  different mechanisms — a target that errored before the tool ran, a note not updated after a fix,
+  and now a cache — producing the same failure, which is this stream's own thesis arriving at the
+  instrument doing the measuring: **the count is a claim, and nothing binds it either.**
+
+  **The cheap half is knowing, not fixing.** Whatever the cache mechanism turns out to be (mtime
+  granularity across edits landing in the same second is the likely one, and worth confirming before
+  blaming mypy), any count recorded in this file should come from a cleared cache, because an
+  incremental one cannot be told from a clean one by reading the output. That is a line in the
+  toolchain note, not a code change.
+
+  **The half worth building: a baseline, now, rather than after L5.** This stream's premise is that
+  until `typecheck` is clean nothing checks the annotations, so they drift like prose — which defers
+  the binding until a rewrite that is explicitly "its own pass". A frozen baseline binds them
+  *today*: the 58 known errors pass, anything new fails, and `typecheck` can join `make check` and CI
+  without waiting for L5. L1, L2 and L4 all entered as drift on a surface nothing was watching, and a
+  baseline is the only proposal here that stops the fourth one arriving the same way rather than
+  being found by reading. It also makes L5 measurable — the baseline shrinks by the cluster, which is
+  the evidence the model change was the right one.
+
 ---
 
 ## Toolchain note — always `uv run python -m <tool>`
@@ -490,6 +523,11 @@ recorded error count went stale for months.
 
 Nothing in the repo is affected — the `Makefile` and `.github/workflows/ci.yaml` both use
 `uv run python -m pytest`, which is the form every target should keep using.
+
+**And clear `.mypy_cache` before recording an error count** (L6). `make typecheck` on an unchanged
+tree reported 66 from an incremental cache and 58 after `rm -rf .mypy_cache` — including two errors
+against a `build_grouped_table` signature L4 had already changed. A stale run is not distinguishable
+from a clean one by reading its output, and this file has now carried a wrong count three times.
 
 ---
 
@@ -599,7 +637,7 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `public/docs/syntax.md` section + an ESQL demo example. Pairs with HAS: HAS
   *filters* one grain by another; this *measures* across grains. Design captured now; build parked
   until the datasets/rename plumbing lands.
-- [ ] **mypy clean pass.** **68 errors** (153 before the accumulator types landed in v1.15.0, 157
+- [ ] **mypy clean pass.** **58 errors** (68 before L4, 153 before the accumulator types landed in v1.15.0, 157
   before v1.15.0's feature work, 159 before v1.9.0, and recorded as 156 until v1.8.0; the count was
   stale at 143 before that because `make typecheck` called
   `uv run mypy`, whose console script does not spawn, so the target errored out before reaching
@@ -613,12 +651,18 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   it to 68 without a single behavior change. `--warn-unused-ignores` is clean, so no ignore is
   suppressing nothing.
 
-  What is left is two clusters and a tail: **30 `[arg-type]`**, **17 `[typeddict-item]`** plus
+  What is left is two clusters and a tail: **26 `[arg-type]`**, **17 `[typeddict-item]`** plus
   `[index]`, mostly TypedDict key-narrowing mypy cannot follow through runtime `'group' in
-  aggregate` checks, and **6 `[misc]`** which include the dead `__eq__` methods (Stream L). The
-  remaining fix is to model parsed conditions as dataclasses rather than TypedDicts, which is a real
-  change to the parser's shapes and wants its own pass. Until then `typecheck` stays advisory: it is
-  not in `make check` and not in CI.
+  aggregate` checks, and **4 `[misc]`** (the 6 included the dead `__eq__` methods, deleted in
+  v1.15.1), over 5 files rather than 7.
+  ~~The remaining fix is to model parsed conditions as dataclasses rather than TypedDicts~~ — **L5
+  argues that is the wrong instrument**: what the two hierarchies need is a `ParsedCondition` union
+  naming the interchangeability `_evaluate_condition` already relies on, which is cheaper and states
+  a real property. Read L5 before starting a dataclass pass.
+  Until then `typecheck` stays advisory: it is not in `make check` and not in CI — though **L6
+  proposes a baseline that would let it join both now**, without waiting for the model change.
+  **Any count recorded here must come from a cleared `.mypy_cache`** (L6): an incremental run
+  reported 66 against this same tree, including two errors on a signature L4 had already fixed.
 - [x] **Push the release** — done 2026-07-28. PR #2 (`v1.0.1` through `v1.4.0`) and PR #3
   (`v1.5.0`) merged to `main`, all tagged and pushed (`lucash0pe/extendedsql`). `v1.1.2` is
   deliberately untagged: it was never a release, only a version an auto-checkpoint commit wrote to
