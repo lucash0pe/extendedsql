@@ -515,15 +515,26 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `public/docs/syntax.md` section + an ESQL demo example. Pairs with HAS: HAS
   *filters* one grain by another; this *measures* across grains. Design captured now; build parked
   until the datasets/rename plumbing lands.
-- [ ] **mypy clean pass.** 152 errors (157 before v1.15.0, 159 before v1.9.0, and recorded as 156 until v1.8.0; the count was
+- [ ] **mypy clean pass.** **68 errors** (153 before the accumulator types landed in v1.15.0, 157
+  before v1.15.0's feature work, 159 before v1.9.0, and recorded as 156 until v1.8.0; the count was
   stale at 143 before that because `make typecheck` called
   `uv run mypy`, whose console script does not spawn, so the target errored out before reaching
-  mypy; fixed in v1.5.0 to `uv run python -m mypy`, the form every other target uses). All from
-  the dynamic evaluator: union comparisons
-  (`[operator]`) and TypedDict key-narrowing (`[typeddict-item]`/`[index]`) mypy can't follow
-  through runtime `'group' in aggregate` checks. Options: type the cell/accumulator boundaries as
-  `Any` (honest — a `_data_map` slot holds int|float|date or an avg `{'sum','count'}` dict), or
-  model parsed conditions as dataclasses. Until then `typecheck` stays advisory.
+  mypy; fixed in v1.5.0 to `uv run python -m mypy`, the form every other target uses).
+
+  **The count was never a count of problems.** 153 errors came from 61 lines, because a comparison
+  between two union-typed operands reports every illegal *pairing*: four ordering lines in
+  `_evaluate_actual_vs_expected_value` produced 60 of them between them. Naming what the values
+  actually are (`CellValue` / `Accumulator` / `ProjectedValue`) and then leaving nine genuinely
+  un-narrowable lines as targeted `# type: ignore[...]` with the invariant written next to them took
+  it to 68 without a single behavior change. `--warn-unused-ignores` is clean, so no ignore is
+  suppressing nothing.
+
+  What is left is two clusters and a tail: **30 `[arg-type]`**, **17 `[typeddict-item]`** plus
+  `[index]`, mostly TypedDict key-narrowing mypy cannot follow through runtime `'group' in
+  aggregate` checks, and **6 `[misc]`** which include the dead `__eq__` methods (Stream L). The
+  remaining fix is to model parsed conditions as dataclasses rather than TypedDicts, which is a real
+  change to the parser's shapes and wants its own pass. Until then `typecheck` stays advisory: it is
+  not in `make check` and not in CI.
 - [x] **Push the release** — done 2026-07-28. PR #2 (`v1.0.1` through `v1.4.0`) and PR #3
   (`v1.5.0`) merged to `main`, all tagged and pushed (`lucash0pe/extendedsql`). `v1.1.2` is
   deliberately untagged: it was never a release, only a version an auto-checkpoint commit wrote to
@@ -1135,6 +1146,18 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   rather than a flag, which makes it idempotent -- converting an avg twice used to raise "'float'
   object is not subscriptable". `_build_data_map` also stopped spelling out the same accumulators the
   update path spells out, and feeds the first row through `update_data_map` like every other row.
+
+  **What the slot holds is now named, because this release is what made the old claim false.**
+  `_data_map` was annotated `dict[str, str | int | bool | date]`, and the distinct count added a
+  `set` to it that the union never admitted, alongside the avg's `dict` and an avg's `float` result
+  that it had never admitted either. The union was also wrong about `float` at all nine sites that
+  spelled it out: a float column is ordinary, and `SELECT cust, quant.sum` over one returns floats.
+  Fixed here rather than left for a follow-up, on the J5 precedent -- the annotation is this
+  release's own line, so no wheel ever carried it. It is now three named types with the distinction
+  the one union was blurring: `CellValue` (what the frame holds), `Accumulator` (what a slot holds
+  *mid-flight*, which is not always an answer) and `ProjectedValue` (what reaches the caller, `None`
+  included). See the mypy item above for what that did to the error count and why the count was
+  never a count of problems.
 
   **Validated against SQL, not just against itself.** Two new sqlite parity tests over `sales.csv`
   pin the two counts to `COUNT(*)` and `COUNT(DISTINCT state)`, and they disagree on that data, so a
