@@ -436,7 +436,7 @@ were read one by one rather than counted, and one of them was pointing at a live
   that looked like it covered them -- worth recording because a *partial* ignore reads exactly like
   a complete one. 66 -> 58 errors, gate green at 436.
 
-- [ ] **L3. A frame whose columns are not strings raises a raw `TypeError` from inside the parser.**
+- [x] **L3. A frame whose columns are not strings raises a raw `TypeError` from inside the parser.**
   Found by asking what the six `dict[Hashable, Any]` errors in `parse.py` were actually pointing at,
   rather than silencing them: pandas types column labels as `Hashable` because they need not be
   strings, and this engine assumes throughout that they are.
@@ -461,6 +461,12 @@ were read one by one rather than counted, and one of them was pointing at a live
   makes `SELECT 0` work but silently renames the caller's columns, and a frame with both `0` and
   `"0"` then collides. Refusing is consistent with every other collision rule this engine has taken.
   This changes what `df.esql` accepts, so it is a decision, not a cleanup.
+
+  **Shipped in v1.16.0, refusing**, the way the filing leaned. See that entry in the settled record.
+  What made it worth taking rather than deferring is the half the filing did not anticipate: the
+  guard is what makes `column_dtypes: dict[str, np.dtype]` a *true* statement, so the six
+  `dict[Hashable, Any]` errors that turned this up are narrowed at the one place the dict is built
+  rather than silenced at six call sites. The fix and the errors that found it close together.
 
 - [ ] **L5. The condition-tree types claim an inheritance the evaluator does not need.**
   `CompoundGroupCondition` inherits `CompoundCondition` and overrides `conditions` with a different
@@ -1354,6 +1360,42 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   which is the evidence that deleting it is a no-op rather than an assertion that it is.
 
   **Portfolio-side follow-up: none.** No export, no new name, no `GRAMMAR` key, no behavior.
+
+## v1.16.0 — a column label has to be a string, and the frame says so (2026-08-01)
+
+- [x] **L3.** `pd.DataFrame({0: [...], 1: [...]}).esql.query("SELECT 0, 1.sum")` raised
+  `TypeError: sequence item 0: expected str instance, int found` out of `types.aggregate_key`'s
+  `".".join`, naming neither the column nor the query. It now raises a `ParsingError` at `df.esql`.
+  Bumped `1.15.1 -> 1.16.0`; the gate is green at **446 tests** (was 436).
+
+  **Refused, not coerced**, which was the open question and the only decision in the item. `str()` on
+  the way in would make `SELECT 0` work, at the cost of renaming the caller's columns without saying
+  so, and a frame holding both `0` and `"0"` would silently collapse two columns into one label.
+  Refusing keeps the rename where it can be seen, and the message names the type and spells the
+  conversion (`df.columns = df.columns.astype(str)`) so it is one line to take deliberately. Same
+  reasoning and the same place as v1.15.0's reserved-name rule, which is why
+  `_reject_non_string_columns` sits beside `_reject_reserved_columns` and runs first: a non-string
+  label should be reported as itself rather than as a near-miss on `count`.
+
+  **The half that was not in the filing, and is the reason it earned a release rather than a
+  cleanup.** The item was written from the six `dict[Hashable, Any]` errors in `parse.py`, which are
+  pandas saying a column label need not be a string. With the guard in place that claim is no longer
+  true of a frame this engine will accept, so `_build_parsed_query` narrows once, where the dict is
+  built, and the five call-site errors go with it. **53 errors (was 58), no ignore added.** The
+  narrowing is a `cast` and deliberately not a `str()` comprehension: there is nothing left to
+  convert, and coercing there would hide a frame that slipped past the guard. This is the shape
+  Stream L keeps looking for -- a false claim and the thing it was pointing at, fixed by the same
+  change rather than by silencing the claim.
+
+  Covered by `tests/accessor/test_column_labels.py` (10 tests): every label kind pandas allows
+  (`int`, `float`, `bool`, `None`, `tuple`), the refusal happening before any query is read, a
+  string-digit label `"0"` still being queryable, and the `{0: ..., "0": ...}` frame that makes
+  coercion lossy left with its columns intact.
+
+  **Portfolio-side follow-up: none.** No new export, so the export-diff guard does not fire, and no
+  `GRAMMAR` key changes. `NON_STRING_COLUMN` is a new `ParsingErrorType`, which reaches a host only
+  as the `[NON-STRING COLUMN]` prefix on an error string; the demo hands the accessor frames read
+  from its own CSVs, whose labels are strings.
 
 ## 3. Engine-side prep for the ESQL demo
 

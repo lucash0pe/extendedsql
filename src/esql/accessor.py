@@ -16,6 +16,7 @@ IntGreaterThanZero = Annotated[int, Is[lambda x: x > 0]]
 @register_dataframe_accessor("esql")
 class ESQLAccessor:
     def __init__(self, data: pd.DataFrame):
+        _reject_non_string_columns(data)
         _reject_reserved_columns(data)
         self.data = _enforce_allowed_dtypes(data)
 
@@ -39,6 +40,31 @@ class ESQLAccessor:
         still return zero rows.
         """
         get_parsed_query(self.data, query)
+
+
+def _reject_non_string_columns(data: pd.DataFrame) -> None:
+    """Refuse a frame whose column labels are not strings.
+
+    pandas types a label as `Hashable`, so a frame may be keyed by integers, tuples or anything else
+    hashable. This engine assumes strings throughout: a query names a column by writing it, and
+    `types.aggregate_key` joins those names with dots. An integer label got as far as that join and
+    came back as a raw `TypeError: sequence item 0: expected str instance, int found`, naming
+    neither the column nor the query. In the browser demo that reaches the visitor.
+
+    Refused rather than coerced with `str()`, for the same reason `_reject_reserved_columns` refuses
+    rather than picking a reading: coercing renames the caller's columns without saying so, and a
+    frame holding both `0` and `"0"` would silently collapse two columns into one. Renaming is the
+    caller's decision, so the error asks for it and the caller can spell it however they mean it.
+    """
+    for column in data.columns:
+        if not isinstance(column, str):
+            raise ParsingError(
+                ParsingErrorType.NON_STRING_COLUMN,
+                f"Column {column!r} is a {type(column).__name__}, and ESQL can only name a column that "
+                f"is a string. Rename the columns in the data, for example with "
+                f"`df.columns = df.columns.astype(str)`.",
+                token=str(column),
+            )
 
 
 def _reject_reserved_columns(data: pd.DataFrame) -> None:

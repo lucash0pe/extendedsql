@@ -1,5 +1,7 @@
 import re
+from typing import cast
 
+import numpy as np
 import pandas as pd
 
 from esql.parser.types import ParsedQuery
@@ -55,7 +57,12 @@ def _collapse_whitespace(text: str) -> str:
 
 
 def _build_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:
-    column_dtypes = data.dtypes.to_dict()
+    # pandas types a column label as `Hashable`, because a frame may be keyed by anything hashable.
+    # By the time a query is parsed they are strings: `accessor._reject_non_string_columns` refuses
+    # the frame otherwise, which is what lets the rest of the parser name a column by writing it.
+    # A narrowing rather than a conversion, so `str()` is deliberately not applied here -- there is
+    # nothing left to convert, and coercing would hide a frame that slipped past the guard.
+    column_dtypes = cast(dict[str, np.dtype], data.dtypes.to_dict())
     keyword_clauses = get_keyword_clauses(query)
 
     parsed_over_clause = parse_over_clause(over_clause=keyword_clauses["OVER"], column_dtypes=column_dtypes)
