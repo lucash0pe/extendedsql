@@ -421,11 +421,61 @@ lying. A type annotation is the same kind of statement -- it says what a value i
   whose bug was BUG-8's silent doubling, which makes it worth more than tidiness.
 
 **What to look for next, since this is now the third instance.** K2, L1 and L2 are all *a second
-statement of a rule that no longer had to agree with the first*. The remaining mypy clusters are
-the same bet: 30 `[arg-type]` and 17 `[typeddict-item]` say the parsed-condition shapes are modelled
-in a way the code does not follow, which the mypy item above proposes fixing by moving them from
-TypedDicts to dataclasses. That is worth doing for the reason G1 was worth doing, not for the error
-count.
+statement of a rule that no longer had to agree with the first*.
+
+**Reopened 2026-08-01** by L3, which is the same investigation continued: the remaining clusters
+were read one by one rather than counted, and one of them was pointing at a live defect.
+
+- [x] **L4. Four more false claims, no behavior change.** Shipped alongside L3's filing;
+  `datatable` was declared `list[list[int | str | bool | date]]`, the **same missing `float`** L1
+  found at nine other sites and the one site L1 missed, so a float column's cells were declared
+  impossible in the function that scans them. `build_grouped_table` declared
+  `parsed_such_that_clause` and `parsed_having_clause` non-optional while `execute` passes `None`
+  for both and the body guards for it. And L1's own ignore on the avg accumulator named
+  `[index]` where the line also raises `[operator]`, so three errors sat uncovered behind a comment
+  that looked like it covered them -- worth recording because a *partial* ignore reads exactly like
+  a complete one. 66 -> 58 errors, gate green at 436.
+
+- [ ] **L3. A frame whose columns are not strings raises a raw `TypeError` from inside the parser.**
+  Found by asking what the six `dict[Hashable, Any]` errors in `parse.py` were actually pointing at,
+  rather than silencing them: pandas types column labels as `Hashable` because they need not be
+  strings, and this engine assumes throughout that they are.
+
+  ```
+  df = pd.DataFrame({0: ['a', 'b'], 1: [10, 20]})
+  df.esql.query("SELECT 0, 1.sum")
+  -> TypeError: sequence item 0: expected str instance, int found
+  ```
+
+  It gets as far as `types.aggregate_key`'s `".".join(parts)`. `_resolve_column` finds the column
+  happily -- an integer label is a legal key in the dtypes dict -- so nothing refuses the frame, and
+  what reaches the caller is a raw Python error naming neither the column nor the query. In the
+  browser demo that reaches the visitor, which is the same failure `_dtype_kind` was added to prevent
+  in v1.6.0 and that `STRING_LITERAL` got its own error type for in v1.8.0.
+
+  **The instrument already exists and the precedent is exact.** v1.15.0 refuses a frame whose column
+  is named `count`, at `df.esql` rather than at query time, because the name is the thing that can be
+  changed and the collision should be refused where it is chosen. A non-string column name is the
+  same case, so `accessor._reject_reserved_columns` is the place and it wants a sibling. The open
+  question is only whether to **refuse** the frame or **coerce** the labels with `str()`: coercing
+  makes `SELECT 0` work but silently renames the caller's columns, and a frame with both `0` and
+  `"0"` then collides. Refusing is consistent with every other collision rule this engine has taken.
+  This changes what `df.esql` accepts, so it is a decision, not a cleanup.
+
+- [ ] **L5. The condition-tree types claim an inheritance the evaluator does not need.**
+  `CompoundGroupCondition` inherits `CompoundCondition` and overrides `conditions` with a different
+  element type, which TypedDict forbids (3 `[misc]`, and most of the 17 `[typeddict-item]` follow
+  from it). The thing worth knowing is *why* it is written that way and why it has been harmless:
+  **`_evaluate_condition` is declared `condition: dict` and genuinely evaluates both trees** -- the
+  WHERE clause and each SUCH THAT section -- because both really do have the same shape. The
+  inheritance is an attempt to say so, and the `dict` annotation is an opt-out that hides whether it
+  is true.
+
+  So the fix is probably *not* the dataclass migration the mypy item proposes. It is to name the
+  thing that is actually shared: a `ParsedCondition` union that `_evaluate_condition` takes, so the
+  interchangeability the code relies on is written down and checked, and the two hierarchies stop
+  claiming a subtype relationship neither needs. Cheaper than dataclasses and it documents a real
+  property instead of a modelling accident. Worth doing on the G1 reasoning, not for the count.
 
 ---
 

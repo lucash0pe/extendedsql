@@ -1,5 +1,3 @@
-from datetime import date
-
 import pandas as pd
 
 from esql.execution.error import RuntimeError
@@ -21,10 +19,10 @@ def build_grouped_table(
     parsed_select_clause: ParsedSelectClause,
     groups: list[str] | None,
     parsed_where_clause: ParsedWhereClause | None,
-    parsed_such_that_clause: ParsedSuchThatClause,
-    parsed_having_clause: ParsedHavingClause,
+    parsed_such_that_clause: ParsedSuchThatClause | None,
+    parsed_having_clause: ParsedHavingClause | None,
     aggregates: AggregatesDict,
-    datatable: list[list[int | str | bool | date]],
+    datatable: list[list[CellValue]],
     column_indices: dict[str, int],
 ):
     grouping_attributes = parsed_select_clause["grouping_attributes"]
@@ -61,7 +59,10 @@ def build_grouped_table(
             grouped_rows[grouping_attribute_combination] = grouped_row
 
     if parsed_such_that_clause:
-        for group in groups:
+        # `groups` is not None here: a SUCH THAT clause without an OVER to scope is refused at parse
+        # time, so the two arrive together or not at all. That invariant lives in the parser, which
+        # is the right place for it but not a place mypy can see from.
+        for group in groups:  # type: ignore[union-attr]
             group_such_that_section = next(
                 (
                     such_that_section

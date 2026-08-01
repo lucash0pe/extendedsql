@@ -103,7 +103,7 @@ class GroupedRow:
                 self._data_map[key] = value
         elif function == "avg":
             values = self._data_map[key]
-            self._data_map[key] = {"sum": values["sum"] + value, "count": values["count"] + 1}  # type: ignore[index]
+            self._data_map[key] = {"sum": values["sum"] + value, "count": values["count"] + 1}  # type: ignore[index, operator]
 
     # This must be called on all GroupedRows after they have been filtered by the WHERE and SUCH THAT clauses
     def finalize_data_map(self) -> None:
