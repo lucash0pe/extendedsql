@@ -679,21 +679,17 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 - [x] **HAS / semi-join predicate (headline feature, requested for the GD demo).** Shipped in
   v1.4.0; see that entry below. Still open on the demo side: an example wired into the ESQL demo,
   which needs `portfolio` (the frontend) and its data.
-- [ ] **Nested / multi-grain aggregation (headline feature — the grain-bridging companion to
-  HAS).** Aggregate at a declared finer grain, then roll *that* up — an aggregate of an
-  aggregate, in one pass, no subqueries (the MFQueries thesis taken a step further). Motivating
-  case: the GD archive is one song-grain table, but a "show" is the derived grain `(venue, date)`.
-  Today you can group *to* the show grain, but you cannot put a song-level measure beside a
-  show-level roll-up, nor take "avg songs-per-show by venue" (an avg of a per-show count). This
-  makes a separate `shows` table unnecessary — shows become "aggregate at the `(venue, date)`
-  grain." The dataset already *declares* the grain (in the shared `datasets/<src>/*.structure.json`:
-  "a show is (venue, date)"), so the language can read it. Sketch (uncommitted): a `PER <grain>`
-  sub-aggregate, e.g. `SELECT venue, songs_per_show.avg PER show (venue, date) WITH songs_per_show
-  = count PER show`. Work: parser grammar for the sub-grain + a two-level execution pass (compute
-  the fine-grain aggregate, then the output-grain aggregate over it) + tests + a
-  `public/docs/syntax.md` section + an ESQL demo example. Pairs with HAS: HAS
-  *filters* one grain by another; this *measures* across grains. Design captured now; build parked
-  until the datasets/rename plumbing lands.
+- **Nested / multi-grain aggregation — DECLINED 2026-08-01.** The idea was a `PER <grain>`
+  sub-aggregate: aggregate at a declared finer grain, then roll *that* up in one pass, so
+  "avg songs-per-show by venue" (an average of a per-show count) became expressible and a derived
+  grain like a show, `(venue, date)`, never needed its own table. It carried a new grammar clause
+  and a two-level execution pass.
+
+  **Not building it.** The cost is a second execution model for a question you can already answer
+  by grouping twice, and it would be the first construct in the language that the single-pass
+  Phi-operator story does not cover. The language is finished; this was scope, not a gap. Recorded
+  so it is not re-proposed — reopen only if a real query, not a hypothetical, cannot be written
+  without it.
 - [x] **mypy clean pass.** **0 errors**, shipped in v1.16.3; see that entry in the settled record. The
   trail down: 25 before it (53 before L5, 58 before L3, 68 before L4, 153 before the accumulator types landed in v1.15.0, 157
   before v1.15.0's feature work, 159 before v1.9.0, and recorded as 156 until v1.8.0; the count was
@@ -1602,5 +1598,6 @@ column's `values` (what can go in a literal) — and the host does the rendering
   `esql.demokit.build_demo` (SQL-validated), out of this repo.
 - [x] Demo execution model decided: **in-browser via Pyodide** (the `esql` wheel), no backend.
 - [x] `from esql import ESQLAccessor` / the `.esql` accessor is the stable entry point the wheel exposes.
-- Next engine ask from the demo: **nested / multi-grain aggregation** above (§ headline features).
-  `HAS` shipped in v1.4.0; what remains on the demo side is an example wired into the ESQL editor.
+- No open engine ask from the demo. `HAS` shipped in v1.4.0; what remains on the demo side is an
+  example wired into the ESQL editor, which is `portfolio`'s work. Nested / multi-grain aggregation
+  was the last standing ask and was declined 2026-08-01 (see § headline features).

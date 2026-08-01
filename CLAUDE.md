@@ -71,7 +71,6 @@ controls (Pyodide sandbox, CSP, vendored-wheel and runtime integrity, no-exfil, 
 report/error funnel) are owned and documented in `portfolio/` per §5 of the standard. Do
 not duplicate or re-implement them in this engine.
 
-When adding features (for example the pending nested / multi-grain
-aggregation in `.claude/status.md`), preserve this property: parse to typed AST and interpret
-structurally, bind identifiers to allowlists and values as data, never build or evaluate
-code or SQL from query text.
+The language surface is complete and `.claude/status.md` carries no open work. If a feature is
+ever added, preserve this property: parse to typed AST and interpret structurally, bind
+identifiers to allowlists and values as data, never build or evaluate code or SQL from query text.
