@@ -26,7 +26,12 @@ jobs:
         run: uv sync --extra dev
 
       - name: Lint
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests scripts
+
+      # Against the frozen baseline in scripts/mypy-baseline.txt: the known errors pass, a new one
+      # fails. See .claude/status.md, Stream L (L6).
+      - name: Typecheck
+        run: uv run python scripts/typecheck.py
 
       - name: Test
         run: uv run python -m pytest -v

@@ -426,6 +426,26 @@ statement of a rule that no longer had to agree with the first*.
 **Reopened 2026-08-01** by L3, which is the same investigation continued: the remaining clusters
 were read one by one rather than counted, and one of them was pointing at a live defect.
 
+**Closed 2026-08-01** by v1.16.0 (L3), v1.16.1 (L5) and v1.16.2 (L6). **153 -> 25 errors** across
+the stream, one live defect fixed (L3, a raw `TypeError` reaching the caller), and no behavior
+change anywhere else. What closes it is not the count but L6: the annotations are now bound by a
+frozen baseline in `make check` and CI, so this surface is watched rather than periodically read.
+That was the whole premise -- an unbound claim is free to be false -- and it now applies to the
+instrument as well as the code, since the baseline file *is* the count and the gate compares against
+it on every run.
+
+The four things the stream leaves behind, in the order they are worth remembering:
+
+1. **A claim nothing checks will be false eventually**, and every finding here was one: an annotation
+   (L1, L4), a dead method (L2), an inheritance (L5), a number in this file (L6).
+2. **Read a cluster, do not count it.** L3 was found by asking what six errors were pointing at.
+   The answer was a live defect; the errors were the messenger.
+3. **Fix the claim and the thing it points at together.** L3's guard is what made its annotation
+   true, so the narrowing landed at one site instead of six silencings.
+4. **Bind it where it is enforced, not where it is written.** L6 filed a note telling a reader to
+   clear the cache; what shipped was `--no-incremental`, which is the same rule with nothing to
+   remember.
+
 - [x] **L4. Four more false claims, no behavior change.** Shipped alongside L3's filing;
   `datatable` was declared `list[list[int | str | bool | date]]`, the **same missing `float`** L1
   found at nine other sites and the one site L1 missed, so a float column's cells were declared
@@ -490,7 +510,7 @@ were read one by one rather than counted, and one of them was pointing at a live
   always put sections there. So the one place the two hierarchies were tied together was also the
   one place the shape was mis-stated, which is the L-stream thesis in miniature.
 
-- [ ] **L6. `make typecheck` reported a count that was eight errors stale, from `.mypy_cache`.**
+- [x] **L6. `make typecheck` reported a count that was eight errors stale, from `.mypy_cache`.**
   Found 2026-08-01 by running the target on a clean checkout of `d03f2b0` and getting **66**, then
   getting **58** from the same tree after `rm -rf .mypy_cache`. Nothing was edited in between.
 
@@ -523,6 +543,14 @@ were read one by one rather than counted, and one of them was pointing at a live
   being found by reading. It also makes L5 measurable — the baseline shrinks by the cluster, which is
   the evidence the model change was the right one.
 
+  **Shipped in v1.16.2, and the cheap half turned out not to be the cheapest.** See that entry in the
+  settled record. The filing proposed a line in the toolchain note telling a reader to clear the
+  cache; what shipped is `--no-incremental` on every run that records or checks a count, which is the
+  same rule with nothing to remember. Writing it down would have been a fourth unbound claim in a
+  stream about unbound claims. The baseline landed as filed, with one addition the filing did not
+  ask for: a *fixed* error fails too, until the baseline is re-recorded, because a baseline that
+  silently absorbs improvements is exactly mechanism number four.
+
 ---
 
 ## Toolchain note — always `uv run python -m <tool>`
@@ -537,10 +565,21 @@ recorded error count went stale for months.
 Nothing in the repo is affected — the `Makefile` and `.github/workflows/ci.yaml` both use
 `uv run python -m pytest`, which is the form every target should keep using.
 
-**And clear `.mypy_cache` before recording an error count** (L6). `make typecheck` on an unchanged
+**And an error count must come from a non-incremental run** (L6). `make typecheck` on an unchanged
 tree reported 66 from an incremental cache and 58 after `rm -rf .mypy_cache` — including two errors
 against a `build_grouped_table` signature L4 had already changed. A stale run is not distinguishable
-from a clean one by reading its output, and this file has now carried a wrong count three times.
+from a clean one by reading its output, and this file had carried a wrong count three times by then.
+
+**This one is enforced rather than remembered**, since v1.16.2: `scripts/typecheck.py` and `make
+typecheck-report` both pass `--no-incremental`, so neither the gate nor the list you read to fix
+things can come from a cache. A clean run of this project costs about 2.5 seconds, which is what
+made the rule affordable to bind instead of writing down. Plain `uv run python -m mypy` is still
+incremental and still lies; use the targets.
+
+**Where the target list now stands.** `make check` is `lint -> typecheck -> test`, and `typecheck`
+means "no error outside `scripts/mypy-baseline.txt`", not "mypy is clean". `make typecheck-record`
+rewrites the baseline and should only ever run in the same commit as the change that earns it.
+`make typecheck-report` prints the full error list for reading.
 
 ---
 
@@ -650,7 +689,7 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `public/docs/syntax.md` section + an ESQL demo example. Pairs with HAS: HAS
   *filters* one grain by another; this *measures* across grains. Design captured now; build parked
   until the datasets/rename plumbing lands.
-- [ ] **mypy clean pass.** **58 errors** (68 before L4, 153 before the accumulator types landed in v1.15.0, 157
+- [ ] **mypy clean pass.** **25 errors** (53 before L5, 58 before L3, 68 before L4, 153 before the accumulator types landed in v1.15.0, 157
   before v1.15.0's feature work, 159 before v1.9.0, and recorded as 156 until v1.8.0; the count was
   stale at 143 before that because `make typecheck` called
   `uv run mypy`, whose console script does not spawn, so the target errored out before reaching
@@ -664,18 +703,20 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   it to 68 without a single behavior change. `--warn-unused-ignores` is clean, so no ignore is
   suppressing nothing.
 
-  What is left is two clusters and a tail: **26 `[arg-type]`**, **17 `[typeddict-item]`** plus
-  `[index]`, mostly TypedDict key-narrowing mypy cannot follow through runtime `'group' in
-  aggregate` checks, and **4 `[misc]`** (the 6 included the dead `__eq__` methods, deleted in
-  v1.15.1), over 5 files rather than 7.
+  What is left, after L3 and L5 took the two clusters, is a tail: **7 `[typeddict-item]`** and
+  **7 `[arg-type]`**, both now mostly the *same* remaining narrowing — mypy cannot follow a runtime
+  `'group' in aggregate` check, so a `GlobalAggregate` reaching a `list[GroupAggregate]` is reported
+  at four sites — plus **4 `[assignment]`**, 2 `[var-annotated]`, 2 `[union-attr]` and one each of
+  `[return-value]`, `[misc]`, `[index]`, over 5 files.
   ~~The remaining fix is to model parsed conditions as dataclasses rather than TypedDicts~~ — **L5
-  argues that is the wrong instrument**: what the two hierarchies need is a `ParsedCondition` union
-  naming the interchangeability `_evaluate_condition` already relies on, which is cheaper and states
-  a real property. Read L5 before starting a dataclass pass.
-  Until then `typecheck` stays advisory: it is not in `make check` and not in CI — though **L6
-  proposes a baseline that would let it join both now**, without waiting for the model change.
-  **Any count recorded here must come from a cleared `.mypy_cache`** (L6): an incremental run
-  reported 66 against this same tree, including two errors on a signature L4 had already fixed.
+  shipped the alternative** in v1.16.1: a `ParsedCondition` union naming the interchangeability
+  `_evaluate_condition` relies on, which took 53 errors to 25 with no behavior change and no
+  dataclasses. Do not start a dataclass pass; read the v1.16.1 entry first.
+  **`typecheck` is no longer advisory.** Since v1.16.2 it runs against a frozen baseline
+  (`scripts/mypy-baseline.txt`) and sits in both `make check` and CI: the known errors pass, a new
+  one fails, and a *fixed* one fails too until the baseline is re-recorded. So this count cannot go
+  stale again — the file is the count, and the gate compares against it on every run. `make
+  typecheck-report` prints the full list.
 - [x] **Push the release** — done 2026-07-28. PR #2 (`v1.0.1` through `v1.4.0`) and PR #3
   (`v1.5.0`) merged to `main`, all tagged and pushed (`lucash0pe/extendedsql`). `v1.1.2` is
   deliberately untagged: it was never a release, only a version an auto-checkpoint commit wrote to
@@ -1456,6 +1497,50 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 
   **Portfolio-side follow-up: none.** No export, no `GRAMMAR` key, no behavior, no parsed shape
   changed -- only what the declarations say about it.
+
+## v1.16.2 — the annotations get a gate (2026-08-01)
+
+- [x] **L6, which closes Stream L.** `make typecheck` is no longer advisory: it runs against a frozen
+  baseline and sits in `make check` and in CI. Bumped `1.16.1 -> 1.16.2`; the gate is green at **451
+  tests** and **25 known type errors, none new**. No behavior change; nothing in `src/esql/` moved.
+
+  **Why a baseline rather than waiting for a clean run.** The stream's premise is that until
+  `typecheck` is clean nothing checks the annotations, so they drift like prose -- which defers the
+  binding to a rewrite that keeps being "its own pass". L1, L2, L4 and L5 all entered as drift on a
+  surface nothing was watching, and all four were found by *reading*, which does not scale and did
+  not happen for months at a time. A baseline binds the surface today at the cost of one file.
+
+  **It fails in both directions, which is the part not in the filing.** A new error fails, obviously.
+  A *fixed* error fails too, asking for `make typecheck-record`. A baseline that silently absorbed
+  improvements would be a fourth mechanism for the wrong count L6 exists about -- after a target that
+  errored before mypy ran (v1.5.0), a note not updated after a fix (L4), and a cache (L6 itself).
+  Re-recording is one command, and it puts the shrink in the diff where it can be reviewed, which is
+  what makes a number like L5's "53 -> 25" evidence rather than an assertion.
+
+  **An error's identity is its file, code and message, never its line number**, so moving code does
+  not churn the baseline and a real regression cannot hide behind a reformat. Two identical errors in
+  one file count as two entries.
+
+  **The cache half is enforced, not documented.** The filing proposed a line in the toolchain note
+  telling a reader to clear `.mypy_cache` before recording a count. `scripts/typecheck.py` and `make
+  typecheck-report` both pass `--no-incremental` instead, so neither the gate nor the list you read
+  to fix things can come from a cache. A clean run costs about 2.5 seconds, which is what made this
+  affordable. Writing the rule down would have been a fourth unbound claim in a stream about unbound
+  claims; the note now records the enforcement rather than the reminder. (The mechanism behind the
+  original 66-vs-58 was not chased further, because `--no-incremental` makes it unreachable from
+  either target -- and the script rejects any mypy exit code other than 0 or 1, so the tool failing
+  to run can never again be read as zero errors, which is how the 143 went stale before v1.5.0.)
+
+  **The targets now:** `make check` is `lint -> typecheck -> test`; `typecheck` means "no error
+  outside `scripts/mypy-baseline.txt`"; `typecheck-record` rewrites the baseline; `typecheck-report`
+  prints the full list for reading. `ruff` now covers `scripts/` too. CI gains a Typecheck step
+  between Lint and Test, on all six matrix legs.
+
+  Verified the guard bites, three ways: a deliberate `return x` type error in `parser/error.py` fails
+  with the new error named; deleting a line from the baseline fails as if it were new; and adding a
+  line the tool does not report fails with the "run `make typecheck-record`" message.
+
+  **Portfolio-side follow-up: none.** No export, no `GRAMMAR` key, no runtime code.
 
 ## 3. Engine-side prep for the ESQL demo
 

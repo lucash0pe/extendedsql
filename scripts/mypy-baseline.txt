@@ -1,0 +1,29 @@
+# Frozen mypy baseline. Every line is one known error: file, code, message.
+# Line numbers are deliberately absent, so moving code does not churn this file.
+# Regenerate with `make typecheck-record`, and only alongside the change that earns it.
+# 25 errors.
+src/esql/demokit.py	arg-type	Argument 1 to "dtype_family" has incompatible type "dtype[generic[Any]] | ExtensionDtype"; expected "dtype[Any]"
+src/esql/demokit.py	assignment	Incompatible types in assignment (expression has type "list[str]", target has type "str")
+src/esql/execution/algorithms.py	assignment	Incompatible types in assignment (expression has type "str | int | date | set[str | int | float | bool | date] | dict[str, Any] | None", target has type "float")
+src/esql/execution/algorithms.py	misc	Cannot infer type of lambda
+src/esql/execution/algorithms.py	return-value	Incompatible return value type (got "list[dict[str, float]]", expected "list[dict[str, str | int | float | bool | date | None]]")
+src/esql/execution/algorithms.py	union-attr	Item "None" of "Any | None" has no attribute "update_data_map"
+src/esql/execution/algorithms.py	union-attr	Item "None" of "GroupedRow | None" has no attribute "update_data_map"
+src/esql/execution/algorithms.py	var-annotated	Need type annotation for "grouped_rows" (hint: "grouped_rows: dict[<type>, <type>] = ...")
+src/esql/parser/parse.py	arg-type	Argument "select_clause" to "parse_select_clause" has incompatible type "str | None"; expected "str"
+src/esql/parser/parse.py	arg-type	Argument 1 to "append" of "list" has incompatible type "GlobalAggregate"; expected "GroupAggregate"
+src/esql/parser/types.py	typeddict-item	TypedDict "GlobalAggregate" has no key "group"
+src/esql/parser/util.py	arg-type	Argument 1 to "append" of "list" has incompatible type "GlobalAggregate"; expected "GroupAggregate"
+src/esql/parser/util.py	arg-type	Argument 1 to "append" of "list" has incompatible type "GlobalAggregate"; expected "GroupAggregate"
+src/esql/parser/util.py	arg-type	Argument 1 to "find_group_in_such_that_section" has incompatible type "object | Any"; expected "ParsedSuchThatSection"
+src/esql/parser/util.py	arg-type	Argument 1 to "find_group_in_such_that_section" has incompatible type "str"; expected "ParsedSuchThatSection"
+src/esql/parser/util.py	assignment	Incompatible types in assignment (expression has type "ParsedHavingClause", variable has type "str")
+src/esql/parser/util.py	assignment	Incompatible types in assignment (expression has type "SimpleGroupCondition | CompoundGroupCondition | NotGroupCondition", variable has type "str")
+src/esql/parser/util.py	index	Value of type "object" is not indexable
+src/esql/parser/util.py	typeddict-item	Incompatible types (expression has type "GlobalAggregate", TypedDict item "aggregate" has type "GroupAggregate")
+src/esql/parser/util.py	typeddict-item	Incompatible types (expression has type "str", TypedDict item "condition" has type "ParsedHavingClause")
+src/esql/parser/util.py	typeddict-item	TypedDict "CompoundGroupCondition" has no key "group"
+src/esql/parser/util.py	typeddict-item	TypedDict "CompoundGroupCondition" has no key "group"
+src/esql/parser/util.py	typeddict-item	TypedDict "NotGroupCondition" has no key "group"
+src/esql/parser/util.py	typeddict-item	TypedDict "NotGroupCondition" has no key "group"
+src/esql/parser/util.py	var-annotated	Need type annotation for "groups" (hint: "groups: list[<type>] = ...")

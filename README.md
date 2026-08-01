@@ -211,12 +211,18 @@ ESQL uses [uv](https://docs.astral.sh/uv/) for dependency management and packagi
 
 ```sh
 uv sync --extra dev   # install runtime + dev dependencies
-make check            # the gate: ruff lint + pytest
+make check            # the gate: ruff lint + mypy baseline + pytest
 make test             # tests only
 make lint             # ruff
-make typecheck        # mypy (advisory; see .claude/status.md)
+make typecheck        # mypy against a frozen baseline: known errors pass, new ones fail
+make typecheck-report # the full mypy error list, for reading rather than gating
 make build            # build the wheel + sdist into dist/
 ```
+
+`make typecheck` compares mypy's output against `scripts/mypy-baseline.txt`. mypy is not yet clean
+over the dynamic query evaluator, so the baseline holds the known errors and the gate fails on
+anything outside it. Fixing one fails too, until `make typecheck-record` writes the smaller
+baseline in the same commit.
 
 The engine lives in `src/esql/` (`parser/` turns a query into a typed clause structure,
 `execution/` computes the grouped result via the Φ-operator algorithm). See `.claude/status.md` for
