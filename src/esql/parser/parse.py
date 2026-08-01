@@ -1,10 +1,9 @@
 import re
 from typing import cast
 
-import numpy as np
 import pandas as pd
 
-from esql.parser.types import ParsedQuery
+from esql.parser.types import ColumnDtype, ParsedQuery
 from esql.parser.util import (
     get_keyword_clauses,
     literal_spans,
@@ -62,13 +61,17 @@ def _build_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:
     # the frame otherwise, which is what lets the rest of the parser name a column by writing it.
     # A narrowing rather than a conversion, so `str()` is deliberately not applied here -- there is
     # nothing left to convert, and coercing would hide a frame that slipped past the guard.
-    column_dtypes = cast(dict[str, np.dtype], data.dtypes.to_dict())
+    column_dtypes = cast(dict[str, ColumnDtype], data.dtypes.to_dict())
     keyword_clauses = get_keyword_clauses(query)
 
     parsed_over_clause = parse_over_clause(over_clause=keyword_clauses["OVER"], column_dtypes=column_dtypes)
 
+    # Every other clause is optional and arrives as `str | None`. SELECT is not: `get_keyword_clauses`
+    # raises "Every query must start with SELECT" unless the keyword sits at index 0, and raises
+    # again on a keyword with an empty argument, so by here it is a non-empty string.
+    select_clause = cast(str, keyword_clauses["SELECT"])
     parsed_select_clause = parse_select_clause(
-        select_clause=keyword_clauses["SELECT"], groups=parsed_over_clause, column_dtypes=column_dtypes
+        select_clause=select_clause, groups=parsed_over_clause, column_dtypes=column_dtypes
     )
 
     parsed_where_clause = parse_where_clause(where_clause=keyword_clauses["WHERE"], column_dtypes=column_dtypes)
@@ -87,10 +90,17 @@ def _build_parsed_query(data: pd.DataFrame, query: str) -> ParsedQuery:
     # Merge the SELECT aggregates into those collected from HAVING, skipping any already
     # present. An aggregate named in both SELECT and HAVING (e.g. `quant.avg`) must appear
     # once: a duplicate is accumulated twice per row (doubling sum/count) and converted twice.
-    for scope in ("global_scope", "group_specific"):
-        for aggregate in parsed_select_clause["aggregates"][scope]:
-            if aggregate not in aggregates[scope]:
-                aggregates[scope].append(aggregate)
+    #
+    # The two scopes are written out rather than looped over. A loop needs the scope name as a
+    # variable key, which makes both lists one union to mypy and hides that a global aggregate can
+    # never be filed under `group_specific`. That is the property worth keeping legible on the merge
+    # BUG-8 was about, and `tests/parser/test_aggregate_identity.py` pins the equality it turns on.
+    for global_aggregate in parsed_select_clause["aggregates"]["global_scope"]:
+        if global_aggregate not in aggregates["global_scope"]:
+            aggregates["global_scope"].append(global_aggregate)
+    for group_aggregate in parsed_select_clause["aggregates"]["group_specific"]:
+        if group_aggregate not in aggregates["group_specific"]:
+            aggregates["group_specific"].append(group_aggregate)
 
     order_by_clause = parse_order_by_clause(
         order_by_clause=keyword_clauses["ORDER BY"],

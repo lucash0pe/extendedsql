@@ -1,8 +1,22 @@
 from datetime import date
 from enum import Enum
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, TypeGuard
 
+import numpy as np
 import pandas as pd
+from pandas.api.extensions import ExtensionDtype
+
+ColumnDtype = np.dtype | ExtensionDtype
+"""The dtype of one column of the frame the parser reads.
+
+Not `np.dtype`, which is what these signatures used to say and what every one of them was wrong
+about. `accessor._enforce_allowed_dtypes` coerces text columns to pandas `"string"`, whose dtype is
+`StringDtype` -- an `ExtensionDtype`, not a numpy one. So on `sales.csv` three of nine columns hold
+a dtype the annotation called impossible, and they are the columns every text comparison reads.
+
+The same shape as L1's missing `float`: a value the code always sees, declared out of existence.
+`dtype_family` said as much in prose ("reads an enforced dtype") while its signature said otherwise.
+"""
 
 
 class GlobalAggregate(TypedDict):
@@ -35,6 +49,22 @@ class AggregatesDict(TypedDict):
     group_specific: list[GroupAggregate]
 
 
+def is_group_aggregate(aggregate: GlobalAggregate | GroupAggregate) -> TypeGuard[GroupAggregate]:
+    """Whether an aggregate is scoped to an OVER group, which is exactly whether it carries one.
+
+    The rule had five homes -- `aggregate_key`, both places `parse_select_clause` and
+    `_parse_aggregate_condition` file an aggregate into `global_scope` or `group_specific`, and the
+    SELECT/HAVING merge -- each spelling `"group" in aggregate` and each unable to tell mypy what it
+    had just decided. One home now, and the `TypeGuard` makes the decision visible to the checker
+    rather than only to a reader.
+
+    mypy cannot narrow a union of TypedDicts on an `in` check at all, whether the members are
+    disjoint or one extends the other, which is why this is a function and not the inline test it
+    looks like it could be.
+    """
+    return "group" in aggregate
+
+
 def aggregate_key(aggregate: GlobalAggregate | GroupAggregate) -> str:
     """How an aggregate is spelled as a key: the parts it has, joined by dots.
 
@@ -47,7 +77,7 @@ def aggregate_key(aggregate: GlobalAggregate | GroupAggregate) -> str:
     because the whole query was lowercased before parsing; now that identifiers carry the frame's
     spelling, they have to be built from the same parts by the same code.
     """
-    parts = [aggregate["group"]] if "group" in aggregate else []
+    parts = [aggregate["group"]] if is_group_aggregate(aggregate) else []
     if aggregate["column"] is not None:
         parts.append(aggregate["column"])
     parts.append(aggregate["function"])

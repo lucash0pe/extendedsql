@@ -1,4 +1,5 @@
-from typing import Literal, TypedDict, cast
+from collections.abc import Callable
+from typing import Any, Literal, TypedDict, cast
 
 import pandas as pd
 
@@ -82,13 +83,15 @@ def build_grouped_table(
             if _evaluate_condition(condition=resolved_where_clause, row=datatable_row, column_indices=column_indices)
         ]
 
-    grouped_rows = {}
+    grouped_rows: dict[tuple[CellValue, ...], GroupedRow] = {}
     for datatable_row in filtered_datatable:
         grouping_attribute_combination = tuple(
             datatable_row[column_indices[attribute]] for attribute in grouping_attributes
         )
         if grouping_attribute_combination in grouped_rows:
-            grouped_row = grouped_rows.get(grouping_attribute_combination)
+            # Indexed rather than `.get`, which answered `GroupedRow | None` on the one branch that
+            # has just established the key is present.
+            grouped_row = grouped_rows[grouping_attribute_combination]
             for aggregate in global_aggregates:
                 grouped_row.update_data_map(aggregate, datatable_row)
         else:
@@ -475,9 +478,12 @@ def project_select_attributes(
     select_items = parsed_select_clause["select_items_in_order"]
     projected_table = []
     for grouped_row in grouped_table:
-        row = {}
+        row: dict[str, ProjectedValue] = {}
         for select_item in select_items:
-            value = grouped_row.data_map.get(select_item)
+            # Finalized before this runs (`build_grouped_table`), so the accumulating shapes -- the
+            # distinct-value set and the sum/count pair -- have already become answers. Same
+            # invariant the HAVING evaluator reads under.
+            value = cast(ProjectedValue, grouped_row.data_map.get(select_item))
             if isinstance(value, float):
                 row[select_item] = round(value, decimal_places)
             else:
@@ -486,11 +492,22 @@ def project_select_attributes(
     return projected_table
 
 
-def _sort_key(value):
+def _sort_key(value: ProjectedValue) -> tuple[int, Any]:
     """Null-safe ordering element: missing values (a blank grouping cell, pd.NA/nan/None) sort last
     and are tagged so they never get compared against a present value of another type. Without this,
     ORDER BY over a grouping column that holds blanks raises when the sort compares NA or None."""
     return (1, "") if _is_missing(value) else (0, value)
+
+
+def _sort_by_term(term: str) -> Callable[[dict[str, ProjectedValue]], tuple[int, Any]]:
+    """A sort key reading one projected term.
+
+    A closure rather than the `lambda row, term=term:` default-argument trick it replaces. That trick
+    binds the loop variable by value, which the sort below does not need -- each `sort()` finishes
+    before the next iteration rebinds anything -- and a lambda with a default argument is one mypy
+    cannot infer a type for.
+    """
+    return lambda row: _sort_key(row.get(term))
 
 
 def order_by_sort(
@@ -507,8 +524,5 @@ def order_by_sort(
     time the rows reach here the difference has already been projected away.
     """
     for sort_term in reversed(order_by):
-        projected_table.sort(
-            key=lambda row, term=sort_term["term"]: _sort_key(row.get(term)),
-            reverse=sort_term["descending"],
-        )
+        projected_table.sort(key=_sort_by_term(sort_term["term"]), reverse=sort_term["descending"])
     return projected_table

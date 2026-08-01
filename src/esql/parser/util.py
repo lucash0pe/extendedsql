@@ -1,13 +1,13 @@
 import re
 from datetime import date, datetime
-from typing import Final
+from typing import Final, cast
 
-import numpy as np
 import pandas as pd
 
 from esql.parser.error import ParsingError, ParsingErrorType
 from esql.parser.types import (
     AggregatesDict,
+    ColumnDtype,
     CompoundAggregateCondition,
     CompoundCondition,
     CompoundGroupCondition,
@@ -30,6 +30,7 @@ from esql.parser.types import (
     SimpleGroupCondition,
     SortTerm,
     aggregate_key,
+    is_group_aggregate,
 )
 
 ###########################################################################
@@ -146,7 +147,7 @@ DATE_PATTERN = re.compile(r"^\d{4}[-/]\d{1,2}[-/]\d{1,2}$")
 # the error blamed `'cust'`, a word the query never contained. See `.claude/status.md`, K1.
 
 
-def dtype_family(dtype: np.dtype) -> str:
+def dtype_family(dtype: ColumnDtype) -> str:
     """Which of `DTYPE_FAMILIES` a column's dtype belongs to.
 
     Reads an **enforced** dtype, which is the only kind the parser ever sees: the accessor coerces
@@ -166,7 +167,7 @@ def dtype_family(dtype: np.dtype) -> str:
     return "string"
 
 
-def _resolve_column(name: str, column_dtypes: dict[str, np.dtype], error_type: ParsingErrorType) -> str | None:
+def _resolve_column(name: str, column_dtypes: dict[str, ColumnDtype], error_type: ParsingErrorType) -> str | None:
     """The frame's spelling of the column `name` names, or None when it names no column.
 
     None means "not a column", which several callers need as an answer rather than an error: it is
@@ -274,7 +275,7 @@ def get_keyword_clauses(query: str) -> dict[str, str | None]:
 ###########################################################################
 # OVER Clause Parsing
 ###########################################################################
-def parse_over_clause(over_clause: str | None, column_dtypes: dict[str, np.dtype]) -> list[str]:
+def parse_over_clause(over_clause: str | None, column_dtypes: dict[str, ColumnDtype]) -> list[str]:
     """The groups OVER declares, each name checked against the others and against the frame.
 
     A group name is the query's to choose, with two names it cannot have: one already declared, and
@@ -282,7 +283,7 @@ def parse_over_clause(over_clause: str | None, column_dtypes: dict[str, np.dtype
     because the first thing to the left of a dot is read as a group or as a column depending on
     which it names, and a name that is both makes `g1.count` two readings of one query.
     """
-    groups = []
+    groups: list[str] = []
     # No OVER clause means no groups, not an absent group list. Returning None here made a
     # group-prefixed aggregate written without OVER (`SELECT x, g1.y.sum`) fail the `group not in
     # groups` membership test in _parse_aggregate with a TypeError instead of a ParsingError.
@@ -314,7 +315,7 @@ def parse_over_clause(over_clause: str | None, column_dtypes: dict[str, np.dtype
     return groups
 
 
-def _column_named(name: str, column_dtypes: dict[str, np.dtype]) -> str | None:
+def _column_named(name: str, column_dtypes: dict[str, ColumnDtype]) -> str | None:
     """The frame's spelling of the column `name` names, or None. Like `_resolve_column` but with no
     opinion about ambiguity: any match at all is a collision, so which one it is does not matter."""
     return next((str(column) for column in column_dtypes if str(column).lower() == name.lower()), None)
@@ -324,7 +325,7 @@ def _column_named(name: str, column_dtypes: dict[str, np.dtype]) -> str | None:
 # SELECT Clause Parsing
 ###########################################################################
 def parse_select_clause(
-    select_clause: str, groups: list[str], column_dtypes: dict[str, np.dtype]
+    select_clause: str, groups: list[str], column_dtypes: dict[str, ColumnDtype]
 ) -> ParsedSelectClause:
     select_items_in_order = []
     grouping_attributes = []
@@ -338,7 +339,7 @@ def parse_select_clause(
             aggregate_result = _parse_aggregate(
                 aggregate=item, groups=groups, column_dtypes=column_dtypes, error_type=ParsingErrorType.SELECT_CLAUSE
             )
-            if "group" in aggregate_result:
+            if is_group_aggregate(aggregate_result):
                 aggregates["group_specific"].append(aggregate_result)
             else:
                 aggregates["global_scope"].append(aggregate_result)
@@ -371,13 +372,13 @@ def parse_select_clause(
 ###########################################################################
 # WHERE Clause Parsing
 ###########################################################################
-def parse_where_clause(where_clause: str | None, column_dtypes: dict[str, np.dtype]) -> ParsedWhereClause | None:
+def parse_where_clause(where_clause: str | None, column_dtypes: dict[str, ColumnDtype]) -> ParsedWhereClause | None:
     if where_clause is None:
         return None
     return _parse_where_clause(where_clause, column_dtypes)
 
 
-def _parse_where_clause(where_clause: str, column_dtypes: dict[str, np.dtype]) -> ParsedWhereClause:
+def _parse_where_clause(where_clause: str, column_dtypes: dict[str, ColumnDtype]) -> ParsedWhereClause:
     where_clause = where_clause.strip()
     if _has_wrapping_parenthesis(where_clause):
         return _parse_where_clause(where_clause[1:-1].strip(), column_dtypes)
@@ -409,7 +410,7 @@ def _parse_where_clause(where_clause: str, column_dtypes: dict[str, np.dtype]) -
 
 
 def _parse_semi_join_condition(
-    key: str, inner: str, condition: str, column_dtypes: dict[str, np.dtype]
+    key: str, inner: str, condition: str, column_dtypes: dict[str, ColumnDtype]
 ) -> SemiJoinCondition:
     if not key:
         raise ParsingError(
@@ -431,7 +432,7 @@ def _parse_semi_join_condition(
     )
 
 
-def _parse_simple_condition(condition: str, column_dtypes: dict[str, np.dtype]) -> SimpleCondition:
+def _parse_simple_condition(condition: str, column_dtypes: dict[str, ColumnDtype]) -> SimpleCondition:
     condition = condition.strip()
     split = _split_condition(condition)
     if not split:
@@ -478,7 +479,7 @@ def _parse_simple_condition(condition: str, column_dtypes: dict[str, np.dtype]) 
 def parse_such_that_clause(
     such_that_clause: str | None,
     groups: list[str],
-    column_dtypes: dict[str, np.dtype],
+    column_dtypes: dict[str, ColumnDtype],
     grouping_attributes: list[str],
 ) -> ParsedSuchThatClause | None:
     if such_that_clause is None:
@@ -495,8 +496,10 @@ def parse_such_that_clause(
             )
         )
     groups_in_parsed_clause = set()
-    for section in parsed_such_that_clause:
-        group = find_group_in_such_that_section(section)
+    # A different `section` from the loop above, which walks the unparsed strings. It reused the
+    # name, so the two spellings of a section shared one variable.
+    for parsed_section in parsed_such_that_clause:
+        group = find_group_in_such_that_section(parsed_section)
         if group in groups_in_parsed_clause:
             raise ParsingError(
                 ParsingErrorType.SUCH_THAT_CLAUSE, f"Multiple sections contain group '{group}'.", token=group
@@ -505,17 +508,34 @@ def parse_such_that_clause(
     return parsed_such_that_clause
 
 
-def find_group_in_such_that_section(group_condition: ParsedSuchThatSection):
+def find_group_in_such_that_section(group_condition: ParsedSuchThatSection) -> str:
+    """The one group a section scopes, found by walking down to any leaf.
+
+    Every leaf in a section names the same group -- `_parse_such_that_section` refuses a section
+    whose branches name more than one -- so the first leaf reached answers for the whole section.
+    """
     if not group_condition:
         raise ParsingError(ParsingErrorType.SUCH_THAT_CLAUSE, "No group found in group condition.")
-    group = group_condition.get("group")
-    if not group:
-        return find_group_in_such_that_section(group_condition.get("condition") or group_condition.get("conditions")[0])
-    return group
+    if "group" in group_condition:
+        return cast(SimpleGroupCondition, group_condition)["group"]
+    if "condition" in group_condition:
+        return find_group_in_such_that_section(cast(NotGroupCondition, group_condition)["condition"])
+    return find_group_in_such_that_section(cast(CompoundGroupCondition, group_condition)["conditions"][0])
+
+
+def _groups_named_by_leaves(sections: list[ParsedSuchThatSection]) -> set[str]:
+    """The groups named by the leaves directly under a branch, which is what "one group per section"
+    is checked against.
+
+    Only direct children, deliberately: a nested branch is checked by its own recursion, which has
+    already refused it if it mixed groups. Written once here because the OR and AND arms of
+    `_parse_such_that_section` asked the same question in two spellings.
+    """
+    return {cast(SimpleGroupCondition, section)["group"] for section in sections if "group" in section}
 
 
 def _parse_such_that_section(
-    section: str, groups: list[str], column_dtypes: dict[str, np.dtype], grouping_attributes: list[str]
+    section: str, groups: list[str], column_dtypes: dict[str, ColumnDtype], grouping_attributes: list[str]
 ) -> ParsedSuchThatSection:
     section = section.strip()
     if _has_wrapping_parenthesis(section):
@@ -526,7 +546,7 @@ def _parse_such_that_section(
         parsed_or_conditions = [
             _parse_such_that_section(cond, groups, column_dtypes, grouping_attributes) for cond in or_conditions
         ]
-        groups_found = {groupCondition["group"] for groupCondition in parsed_or_conditions if "group" in groupCondition}
+        groups_found = _groups_named_by_leaves(parsed_or_conditions)
         if len(groups_found) != 1:
             raise ParsingError(
                 ParsingErrorType.SUCH_THAT_CLAUSE,
@@ -541,9 +561,7 @@ def _parse_such_that_section(
         parsed_and_conditions = [
             _parse_such_that_section(cond, groups, column_dtypes, grouping_attributes) for cond in and_conditions
         ]
-        groups_found = {
-            groupCondition["group"] for groupCondition in parsed_and_conditions if "group" in groupCondition
-        }
+        groups_found = _groups_named_by_leaves(parsed_and_conditions)
         if len(groups_found) != 1:
             raise ParsingError(
                 ParsingErrorType.SUCH_THAT_CLAUSE,
@@ -581,7 +599,7 @@ def _parse_such_that_section(
 
 
 def _parse_simple_group_condition(
-    condition: str, group: str, column_dtypes: dict[str, np.dtype], grouping_attributes: list[str]
+    condition: str, group: str, column_dtypes: dict[str, ColumnDtype], grouping_attributes: list[str]
 ) -> SimpleGroupCondition:
     condition = condition.strip()
     if _split_on_semi_join(condition):
@@ -644,7 +662,7 @@ def _parse_simple_group_condition(
 # HAVING Clause Parsing
 ###########################################################################
 def parse_having_clause(
-    having_clause: str | None, groups: list[str], column_dtypes: dict[str, np.dtype]
+    having_clause: str | None, groups: list[str], column_dtypes: dict[str, ColumnDtype]
 ) -> tuple[ParsedHavingClause | None, AggregatesDict]:
     aggregates = AggregatesDict(global_scope=[], group_specific=[])
     if having_clause is None:
@@ -655,7 +673,7 @@ def parse_having_clause(
 
 
 def _parse_having_clause(
-    having_clause: str, aggregates: AggregatesDict, groups: list[str], column_dtypes: dict[str, np.dtype]
+    having_clause: str, aggregates: AggregatesDict, groups: list[str], column_dtypes: dict[str, ColumnDtype]
 ) -> tuple[ParsedHavingClause, AggregatesDict]:
     having_clause = having_clause.strip()
     if _has_wrapping_parenthesis(having_clause):
@@ -679,14 +697,16 @@ def _parse_having_clause(
 
     if having_clause.lower().startswith(LogicalOperator.NOT.value.lower() + " "):
         having_clause = having_clause[len(LogicalOperator.NOT.value) + 1 :].strip()
-        condition, aggregates = _parse_having_clause(having_clause, aggregates, groups, column_dtypes)
-        return (NotAggregateCondition(operator=LogicalOperator.NOT, condition=condition), aggregates)
+        # Not `condition`: that name is this function's `str` parameter one scope up, and reusing it
+        # for the parsed result made one variable hold a clause and the text of a clause.
+        negated, aggregates = _parse_having_clause(having_clause, aggregates, groups, column_dtypes)
+        return (NotAggregateCondition(operator=LogicalOperator.NOT, condition=negated), aggregates)
 
     return _parse_aggregate_condition(having_clause, aggregates, groups, column_dtypes)
 
 
 def _parse_aggregate_condition(
-    condition: str, aggregates: AggregatesDict, groups: list[str], column_dtypes: dict[str, np.dtype]
+    condition: str, aggregates: AggregatesDict, groups: list[str], column_dtypes: dict[str, ColumnDtype]
 ) -> tuple[GroupAggregateCondition | GlobalAggregateCondition, AggregatesDict]:
     condition = condition.strip()
     split = _split_condition(condition)
@@ -720,7 +740,7 @@ def _parse_aggregate_condition(
             ParsingErrorType.HAVING_CLAUSE, f"Invalid value for condition: {condition}", token=condition
         ) from None
 
-    if "group" in aggregate:
+    if is_group_aggregate(aggregate):
         if aggregate not in aggregates["group_specific"]:
             aggregates["group_specific"].append(aggregate)
         return (GroupAggregateCondition(aggregate=aggregate, operator=operator, value=numeric_value), aggregates)
@@ -821,7 +841,7 @@ def _resolve_sort_term(written_term: str, select_items_in_order: list[str]) -> s
 def _parse_aggregate(
     aggregate: str,
     groups: list[str],
-    column_dtypes: dict[str, np.dtype],
+    column_dtypes: dict[str, ColumnDtype],
     error_type: ParsingErrorType,
 ) -> GlobalAggregate | GroupAggregate:
     """Read one aggregate in any of its four forms.
@@ -908,7 +928,7 @@ def _aggregate_column_and_function(
     written_column: str,
     written_function: str,
     aggregate: str,
-    column_dtypes: dict[str, np.dtype],
+    column_dtypes: dict[str, ColumnDtype],
     error_type: ParsingErrorType,
 ) -> tuple[str, str]:
     """The column and function of an aggregate that names a column, checked against each other."""
@@ -928,7 +948,7 @@ def _aggregate_column_and_function(
 
 
 def _parse_condition_value(
-    column_dtype: np.dtype,
+    column_dtype: ColumnDtype,
     operator: str,
     value: str,
     condition: str,
@@ -1014,7 +1034,7 @@ def _date_value(value: str, condition: str, error_type: ParsingErrorType) -> dat
 # Entry Value Parsing
 ###########################################################################
 def _parse_entry_value(
-    value: str, column_dtypes: dict[str, np.dtype], error_type: ParsingErrorType
+    value: str, column_dtypes: dict[str, ColumnDtype], error_type: ParsingErrorType
 ) -> EntryValue | None:
     """Read `value` as `<column>` or `<column> ± <number>`, or None when it is not that shape.
 
@@ -1043,7 +1063,7 @@ def _validate_entry_value(
     entry_value: EntryValue,
     column: str,
     grouping_attributes: list[str],
-    column_dtypes: dict[str, np.dtype],
+    column_dtypes: dict[str, ColumnDtype],
     condition: str,
 ) -> None:
     """Raise unless `entry_value` names something the output row actually holds and can be compared
@@ -1074,7 +1094,7 @@ def _validate_entry_value(
         )
 
 
-def _dtype_kind(column_dtype: np.dtype) -> str:
+def _dtype_kind(column_dtype: ColumnDtype) -> str:
     """Which family of values a column holds: numeric, bool, date or text.
 
     The order matters and matches how `_parse_condition_value` discriminates a literal. A bool

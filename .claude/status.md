@@ -426,18 +426,20 @@ statement of a rule that no longer had to agree with the first*.
 **Reopened 2026-08-01** by L3, which is the same investigation continued: the remaining clusters
 were read one by one rather than counted, and one of them was pointing at a live defect.
 
-**Closed 2026-08-01** by v1.16.0 (L3), v1.16.1 (L5) and v1.16.2 (L6). **153 -> 25 errors** across
-the stream, one live defect fixed (L3, a raw `TypeError` reaching the caller), and no behavior
-change anywhere else. What closes it is not the count but L6: the annotations are now bound by a
-frozen baseline in `make check` and CI, so this surface is watched rather than periodically read.
-That was the whole premise -- an unbound claim is free to be false -- and it now applies to the
-instrument as well as the code, since the baseline file *is* the count and the gate compares against
-it on every run.
+**Closed 2026-08-01** by v1.16.0 (L3), v1.16.1 (L5) and v1.16.2 (L6), and then taken the last step
+by v1.16.3, which finished the clean pass those three had left a 25-error tail of. **153 -> 0
+errors** across the stream, one live defect fixed (L3, a raw `TypeError` reaching the caller), and no
+behavior change anywhere else. What closes it is not the count but the gate: `make check` is now
+`lint -> typecheck -> test` and mypy is clean, so this surface is watched on every run rather than
+periodically read. That was the whole premise -- an unbound claim is free to be false -- and it ends
+up applying to the instrument too. The error count was the last claim in this file that nothing
+bound, and the fix was to stop having one: the number is now the gate's exit status.
 
-The four things the stream leaves behind, in the order they are worth remembering:
+The five things the stream leaves behind, in the order they are worth remembering:
 
 1. **A claim nothing checks will be false eventually**, and every finding here was one: an annotation
-   (L1, L4), a dead method (L2), an inheritance (L5), a number in this file (L6).
+   (L1, L4, and `np.dtype` in v1.16.3), a dead method (L2), an inheritance (L5), a number in this
+   file (L6).
 2. **Read a cluster, do not count it.** L3 was found by asking what six errors were pointing at.
    The answer was a live defect; the errors were the messenger.
 3. **Fix the claim and the thing it points at together.** L3's guard is what made its annotation
@@ -445,6 +447,11 @@ The four things the stream leaves behind, in the order they are worth rememberin
 4. **Bind it where it is enforced, not where it is written.** L6 filed a note telling a reader to
    clear the cache; what shipped was `--no-incremental`, which is the same rule with nothing to
    remember.
+5. **State a claim to find out it is wrong.** L3's cast narrowed `dict[Hashable, Any]` to
+   `dict[str, np.dtype]` and in doing so wrote down, for the first time, a value type that had been
+   false at 22 sites since the beginning. Nobody could see it while it was only an assumption.
+   Scaffolding counts too: v1.16.2's baseline was built to be deleted one release later, and it was
+   worth building anyway, because it made the shrink visible while the shrinking happened.
 
 - [x] **L4. Four more false claims, no behavior change.** Shipped alongside L3's filing;
   `datatable` was declared `list[list[int | str | bool | date]]`, the **same missing `float`** L1
@@ -570,16 +577,14 @@ tree reported 66 from an incremental cache and 58 after `rm -rf .mypy_cache` —
 against a `build_grouped_table` signature L4 had already changed. A stale run is not distinguishable
 from a clean one by reading its output, and this file had carried a wrong count three times by then.
 
-**This one is enforced rather than remembered**, since v1.16.2: `scripts/typecheck.py` and `make
-typecheck-report` both pass `--no-incremental`, so neither the gate nor the list you read to fix
-things can come from a cache. A clean run of this project costs about 2.5 seconds, which is what
-made the rule affordable to bind instead of writing down. Plain `uv run python -m mypy` is still
-incremental and still lies; use the targets.
+**This one is enforced rather than remembered**, since v1.16.2: `make typecheck` passes
+`--no-incremental`, so the gate cannot read a cache. A clean run of this project costs about 2.5
+seconds, which is what made the rule affordable to bind instead of writing down. A bare
+`uv run python -m mypy` is still incremental and still lies; use the target.
 
-**Where the target list now stands.** `make check` is `lint -> typecheck -> test`, and `typecheck`
-means "no error outside `scripts/mypy-baseline.txt`", not "mypy is clean". `make typecheck-record`
-rewrites the baseline and should only ever run in the same commit as the change that earns it.
-`make typecheck-report` prints the full error list for reading.
+**Where the target list now stands.** `make check` is `lint -> typecheck -> test`, and since v1.16.3
+`typecheck` means what it says: mypy is clean, so any error at all fails. The frozen baseline
+v1.16.2 introduced is gone, having done its job in the one release it existed for.
 
 ---
 
@@ -689,7 +694,8 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   `public/docs/syntax.md` section + an ESQL demo example. Pairs with HAS: HAS
   *filters* one grain by another; this *measures* across grains. Design captured now; build parked
   until the datasets/rename plumbing lands.
-- [ ] **mypy clean pass.** **25 errors** (53 before L5, 58 before L3, 68 before L4, 153 before the accumulator types landed in v1.15.0, 157
+- [x] **mypy clean pass.** **0 errors**, shipped in v1.16.3; see that entry in the settled record. The
+  trail down: 25 before it (53 before L5, 58 before L3, 68 before L4, 153 before the accumulator types landed in v1.15.0, 157
   before v1.15.0's feature work, 159 before v1.9.0, and recorded as 156 until v1.8.0; the count was
   stale at 143 before that because `make typecheck` called
   `uv run mypy`, whose console script does not spawn, so the target errored out before reaching
@@ -703,20 +709,16 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   it to 68 without a single behavior change. `--warn-unused-ignores` is clean, so no ignore is
   suppressing nothing.
 
-  What is left, after L3 and L5 took the two clusters, is a tail: **7 `[typeddict-item]`** and
-  **7 `[arg-type]`**, both now mostly the *same* remaining narrowing — mypy cannot follow a runtime
-  `'group' in aggregate` check, so a `GlobalAggregate` reaching a `list[GroupAggregate]` is reported
-  at four sites — plus **4 `[assignment]`**, 2 `[var-annotated]`, 2 `[union-attr]` and one each of
-  `[return-value]`, `[misc]`, `[index]`, over 5 files.
   ~~The remaining fix is to model parsed conditions as dataclasses rather than TypedDicts~~ — **L5
   shipped the alternative** in v1.16.1: a `ParsedCondition` union naming the interchangeability
   `_evaluate_condition` relies on, which took 53 errors to 25 with no behavior change and no
-  dataclasses. Do not start a dataclass pass; read the v1.16.1 entry first.
-  **`typecheck` is no longer advisory.** Since v1.16.2 it runs against a frozen baseline
-  (`scripts/mypy-baseline.txt`) and sits in both `make check` and CI: the known errors pass, a new
-  one fails, and a *fixed* one fails too until the baseline is re-recorded. So this count cannot go
-  stale again — the file is the count, and the gate compares against it on every run. `make
-  typecheck-report` prints the full list.
+  dataclasses. There is now no reason to start a dataclass pass at all; the TypedDicts type-check
+  clean.
+  **`typecheck` is no longer advisory, and no longer baselined.** v1.16.2 froze the 25 known errors
+  so the surface could be watched before it was clean; v1.16.3 emptied that baseline and deleted it,
+  and the target is now plain `mypy --no-incremental` in `make check` and CI. **This count cannot go
+  stale again, because there is no count** — the number that used to live in this line is now the
+  gate's exit status.
 - [x] **Push the release** — done 2026-07-28. PR #2 (`v1.0.1` through `v1.4.0`) and PR #3
   (`v1.5.0`) merged to `main`, all tagged and pushed (`lucash0pe/extendedsql`). `v1.1.2` is
   deliberately untagged: it was never a release, only a version an auto-checkpoint commit wrote to
@@ -1541,6 +1543,51 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   line the tool does not report fails with the "run `make typecheck-record`" message.
 
   **Portfolio-side follow-up: none.** No export, no `GRAMMAR` key, no runtime code.
+
+## v1.16.3 — mypy is clean, and the baseline is gone (2026-08-01)
+
+- [x] **The mypy clean pass**, open since the stack modernization. **25 errors -> 0.** Bumped
+  `1.16.2 -> 1.16.3`; the gate is green at **455 tests** (was 451). No behavior change.
+
+  **One of the 25 was a false claim on the same scale as L1's missing `float`.** Every
+  `column_dtypes` parameter, at 22 sites, was declared `dict[str, np.dtype]`. It is not:
+  `_enforce_allowed_dtypes` coerces text columns to pandas `"string"`, whose dtype is `StringDtype`,
+  an **`ExtensionDtype` and not a numpy one**. On `sales.csv` that is three of nine columns, and they
+  are the columns every text comparison reads. `dtype_family` even said so in prose -- "reads an
+  enforced dtype" -- directly above a signature that said otherwise. Now one alias, `ColumnDtype`,
+  with the reason attached, and `tests/parser/test_column_dtypes.py` (4 tests) pins that a text
+  column is not an `np.dtype`, that every other family is, and that the engine queries one
+  end to end.
+
+  Worth recording that **L3's cast carried this claim forward.** v1.16.0 narrowed
+  `data.dtypes.to_dict()` from `dict[Hashable, Any]` to `dict[str, np.dtype]`, which fixed the *key*
+  type and made the wrong *value* type explicit for the first time. A cast states a claim; stating
+  one is how it gets checked, and this one was checked three commits later.
+
+  **The rest, read as clusters rather than counted.** `is_group_aggregate` is a `TypeGuard` replacing
+  `"group" in aggregate` written out at five sites -- the rule now has one home and the checker can
+  see the decision, which is the same instrument L5 wanted and could not use for conditions (mypy
+  narrows a `TypeGuard` but never an `in` check on a union of TypedDicts, verified both ways).
+  `find_group_in_such_that_section` gained a return type and a real three-way walk in place of
+  `.get("condition") or .get("conditions")[0]`. `_groups_named_by_leaves` names the "one group per
+  section" check the OR and AND arms were each spelling separately. `SchemaColumn` is a TypedDict
+  with `NotRequired[values]`, which is what `DATASET_SCHEMA` has always declared and what keeps
+  absent (offer no completions) distinct from `[]` (there are none). The projection loop's sort key
+  is a named closure rather than a `lambda row, term=term:`, whose default argument existed to bind
+  a loop variable the sort never outlives. Two variables that held both a clause and the text of a
+  clause were renamed.
+
+  **And the baseline v1.16.2 shipped is deleted.** It existed because the run was not clean; the run
+  is clean, so a file holding zero known errors is a mechanism with no job, and plain
+  `mypy --no-incremental` is both simpler and strictly stronger. What survives from L6 is the half
+  that was never about the baseline: `--no-incremental` on the target, so a cached run cannot be
+  mistaken for a clean one. One release is a short life for a mechanism, and the right one -- it
+  made the shrink measurable while the shrinking was happening, which is exactly what it was for.
+
+  Verified the gate bites: a deliberate `return x` type error in `parser/error.py` fails `make check`
+  at the typecheck step, before the tests run.
+
+  **Portfolio-side follow-up: none.** No export, no `GRAMMAR` key, no behavior.
 
 ## 3. Engine-side prep for the ESQL demo
 

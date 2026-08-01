@@ -26,12 +26,12 @@ jobs:
         run: uv sync --extra dev
 
       - name: Lint
-        run: uv run ruff check src tests scripts
+        run: uv run ruff check src tests
 
-      # Against the frozen baseline in scripts/mypy-baseline.txt: the known errors pass, a new one
-      # fails. See .claude/status.md, Stream L (L6).
+      # --no-incremental: an incremental run cannot be told from a clean one by reading its output.
+      # See .claude/status.md, Stream L (L6).
       - name: Typecheck
-        run: uv run python scripts/typecheck.py
+        run: uv run python -m mypy --no-incremental
 
       - name: Test
         run: uv run python -m pytest -v

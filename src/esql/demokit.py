@@ -22,6 +22,7 @@ import json
 import math
 import sqlite3
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 import pandas as pd
 from pandas.api import types as pdt
@@ -102,11 +103,26 @@ def _distinct_values(series: pd.Series, friendly_type: str) -> list[str] | None:
     return sorted(texts, key=float) if friendly_type == "number" else sorted(texts)
 
 
-def _schema(enforced: pd.DataFrame) -> list[dict]:
+class SchemaColumn(TypedDict):
+    """One entry of the asset's `schema`, mirroring `DATASET_SCHEMA`'s `SchemaColumn`.
+
+    `values` is `NotRequired` because absent and empty mean different things to a host: absent is
+    "do not offer completions for this column", `[]` is "there are none to offer". A plain dict said
+    `dict[str, str]` from its two literal entries, which declared the list this function exists to
+    add impossible, and widening the value type instead made `column["name"]` a `str | list[str]`
+    everywhere it is read. The TypedDict says both things exactly.
+    """
+
+    name: str
+    type: str
+    values: NotRequired[list[str]]
+
+
+def _schema(enforced: pd.DataFrame) -> list[SchemaColumn]:
     columns = []
     for name in enforced.columns:
         friendly_type = _friendly_type(enforced[name])
-        column = {"name": name, "type": friendly_type}
+        column = SchemaColumn(name=str(name), type=friendly_type)
         values = _distinct_values(enforced[name], friendly_type)
         if values is not None:
             column["values"] = values

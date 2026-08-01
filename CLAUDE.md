@@ -21,11 +21,10 @@ in-memory DataFrame handed to the accessor.
 
 ```sh
 uv sync --extra dev   # runtime + dev deps
-make check            # the gate: ruff lint + mypy baseline + pytest
+make check            # the gate: ruff lint + mypy + pytest
 make test             # tests only
 make lint             # ruff
-make typecheck        # mypy against scripts/mypy-baseline.txt: known errors pass, new ones fail
-make typecheck-report # the full mypy error list, for reading rather than gating
+make typecheck        # mypy, clean and enforced
 make build            # wheel + sdist into dist/ (the in-browser demo installs this wheel)
 ```
 
