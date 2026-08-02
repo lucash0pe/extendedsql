@@ -18,6 +18,10 @@ class ParsingErrorType(Enum):
     # accessor is handed the frame, before any query exists, so it names a column rather than a
     # token. See `accessor._reject_reserved_columns`.
     RESERVED_COLUMN = "RESERVED COLUMN"
+    # Also about the data rather than the query: a column label that is not a string, which the
+    # language has no way to write. Same place and same reason as RESERVED_COLUMN, and separate from
+    # it because the fix is different. See `accessor._reject_non_string_columns`.
+    NON_STRING_COLUMN = "NON-STRING COLUMN"
 
 
 class ParsingError(Exception):

@@ -1,8 +1,22 @@
 from datetime import date
 from enum import Enum
-from typing import Literal, TypedDict
+from typing import Literal, TypedDict, TypeGuard
 
+import numpy as np
 import pandas as pd
+from pandas.api.extensions import ExtensionDtype
+
+ColumnDtype = np.dtype | ExtensionDtype
+"""The dtype of one column of the frame the parser reads.
+
+Not `np.dtype`, which is what these signatures used to say and what every one of them was wrong
+about. `accessor._enforce_allowed_dtypes` coerces text columns to pandas `"string"`, whose dtype is
+`StringDtype` -- an `ExtensionDtype`, not a numpy one. So on `sales.csv` three of nine columns hold
+a dtype the annotation called impossible, and they are the columns every text comparison reads.
+
+The same shape as L1's missing `float`: a value the code always sees, declared out of existence.
+`dtype_family` said as much in prose ("reads an enforced dtype") while its signature said otherwise.
+"""
 
 
 class GlobalAggregate(TypedDict):
@@ -35,6 +49,22 @@ class AggregatesDict(TypedDict):
     group_specific: list[GroupAggregate]
 
 
+def is_group_aggregate(aggregate: GlobalAggregate | GroupAggregate) -> TypeGuard[GroupAggregate]:
+    """Whether an aggregate is scoped to an OVER group, which is exactly whether it carries one.
+
+    The rule had five homes -- `aggregate_key`, both places `parse_select_clause` and
+    `_parse_aggregate_condition` file an aggregate into `global_scope` or `group_specific`, and the
+    SELECT/HAVING merge -- each spelling `"group" in aggregate` and each unable to tell mypy what it
+    had just decided. One home now, and the `TypeGuard` makes the decision visible to the checker
+    rather than only to a reader.
+
+    mypy cannot narrow a union of TypedDicts on an `in` check at all, whether the members are
+    disjoint or one extends the other, which is why this is a function and not the inline test it
+    looks like it could be.
+    """
+    return "group" in aggregate
+
+
 def aggregate_key(aggregate: GlobalAggregate | GroupAggregate) -> str:
     """How an aggregate is spelled as a key: the parts it has, joined by dots.
 
@@ -47,7 +77,7 @@ def aggregate_key(aggregate: GlobalAggregate | GroupAggregate) -> str:
     because the whole query was lowercased before parsing; now that identifiers carry the frame's
     spelling, they have to be built from the same parts by the same code.
     """
-    parts = [aggregate["group"]] if "group" in aggregate else []
+    parts = [aggregate["group"]] if is_group_aggregate(aggregate) else []
     if aggregate["column"] is not None:
         parts.append(aggregate["column"])
     parts.append(aggregate["function"])
@@ -126,15 +156,39 @@ class SemiJoinCondition(TypedDict):
 
 
 class SimpleGroupCondition(SimpleCondition):
+    """A `SimpleCondition` that also names the OVER group it scopes.
+
+    The one real subtype among the group conditions, and the only one written as inheritance: it
+    adds a key rather than restating one, so a SUCH THAT leaf *is* a where-clause leaf and
+    `_evaluate_condition` reads it with the same code by inheriting, not by coincidence.
+    """
+
     group: str
 
 
-class CompoundGroupCondition(CompoundCondition):
-    conditions: list["ParsedSuchThatClause"]
+class CompoundGroupCondition(TypedDict):
+    """AND/OR over SUCH THAT sections. The same *shape* as `CompoundCondition`, not a subtype of it.
+
+    It used to inherit `CompoundCondition` and redeclare `conditions`, which TypedDict forbids for a
+    reason: a `CompoundGroupCondition` is not usable everywhere a `CompoundCondition` is, because
+    its children are group conditions. That claim cost 3 `[misc]` errors and most of the 17
+    `[typeddict-item]` ones, and it was also *wrong about the level*: the redeclaration read
+    `list[ParsedSuchThatClause]`, a list of *lists* of sections, while `_parse_such_that_section`
+    has always put sections here. Nothing caught it because nothing checked it.
+
+    What the two hierarchies actually share is that `_evaluate_condition` walks either one -- see
+    `ParsedCondition` below, which is where that is now written down.
+    """
+
+    operator: Literal[LogicalOperator.AND, LogicalOperator.OR]
+    conditions: list["ParsedSuchThatSection"]
 
 
-class NotGroupCondition(NotCondition):
-    condition: "ParsedSuchThatClause"
+class NotGroupCondition(TypedDict):
+    """NOT over a SUCH THAT section. Standalone for the same reason as `CompoundGroupCondition`."""
+
+    operator: Literal[LogicalOperator.NOT]
+    condition: "ParsedSuchThatSection"
 
 
 class GlobalAggregateCondition(TypedDict):
@@ -143,8 +197,17 @@ class GlobalAggregateCondition(TypedDict):
     value: float
 
 
-class GroupAggregateCondition(GlobalAggregateCondition):
+class GroupAggregateCondition(TypedDict):
+    """A HAVING comparison against a group-scoped aggregate.
+
+    Standalone rather than inheriting `GlobalAggregateCondition` and narrowing `aggregate`, which is
+    the same forbidden override as above. The aggregates themselves *do* inherit
+    (`GroupAggregate(GlobalAggregate)`), because that one adds a key instead of replacing one.
+    """
+
     aggregate: GroupAggregate
+    operator: str
+    value: float
 
 
 class CompoundAggregateCondition(TypedDict):
@@ -167,6 +230,21 @@ ParsedWhereClause = SimpleCondition | CompoundCondition | NotCondition | SemiJoi
 
 ParsedSuchThatSection = SimpleGroupCondition | CompoundGroupCondition | NotGroupCondition
 ParsedSuchThatClause = list[ParsedSuchThatSection]
+
+ParsedCondition = ParsedWhereClause | ParsedSuchThatSection
+"""Any condition tree `algorithms._evaluate_condition` walks: a WHERE clause, or one SUCH THAT
+section.
+
+This is the property the two hierarchies above really share, and it is a property of the
+*evaluator*, not a subtype relationship between the shapes. Both are built from the same three
+node kinds -- a leaf comparing a column, AND/OR over children, NOT over one child -- so one walk
+answers either, which is why `_evaluate_condition` serves the WHERE filter and every SUCH THAT
+section with one function.
+
+Written here so that interchangeability is checked rather than assumed. It used to be asserted by
+`CompoundGroupCondition` inheriting `CompoundCondition`, which claimed something stronger and
+false, and hidden by `_evaluate_condition` taking a bare `dict`, which claimed nothing at all.
+"""
 
 ParsedHavingClause = (
     GlobalAggregateCondition | GroupAggregateCondition | CompoundAggregateCondition | NotAggregateCondition

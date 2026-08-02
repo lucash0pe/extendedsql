@@ -28,5 +28,10 @@ jobs:
       - name: Lint
         run: uv run ruff check src tests
 
+      # --no-incremental: an incremental run cannot be told from a clean one by reading its output.
+      # See .claude/status.md, Stream L (L6).
+      - name: Typecheck
+        run: uv run python -m mypy --no-incremental
+
       - name: Test
         run: uv run python -m pytest -v

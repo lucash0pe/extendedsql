@@ -15,13 +15,14 @@ lint:
 format:
 	uv run ruff format src tests
 
-# Advisory: mypy is configured for parity but not yet clean over the dynamic
-# query evaluator (union comparisons, TypedDict key-narrowing). See .claude/status.md.
+# Enforced, and clean: any error at all fails. --no-incremental because an incremental run reported
+# 66 errors against a tree a clean run reported 58 for, and nothing in the output tells the two
+# apart. A clean run costs about 2.5 seconds. See .claude/status.md, Stream L.
 typecheck:
-	uv run python -m mypy
+	uv run python -m mypy --no-incremental
 
 build:
 	uv build
 
-# The enforced gate: lint -> test.
-check: lint test
+# The enforced gate: lint -> typecheck -> test.
+check: lint typecheck test

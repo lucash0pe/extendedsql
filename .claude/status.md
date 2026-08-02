@@ -421,11 +421,142 @@ lying. A type annotation is the same kind of statement -- it says what a value i
   whose bug was BUG-8's silent doubling, which makes it worth more than tidiness.
 
 **What to look for next, since this is now the third instance.** K2, L1 and L2 are all *a second
-statement of a rule that no longer had to agree with the first*. The remaining mypy clusters are
-the same bet: 30 `[arg-type]` and 17 `[typeddict-item]` say the parsed-condition shapes are modelled
-in a way the code does not follow, which the mypy item above proposes fixing by moving them from
-TypedDicts to dataclasses. That is worth doing for the reason G1 was worth doing, not for the error
-count.
+statement of a rule that no longer had to agree with the first*.
+
+**Reopened 2026-08-01** by L3, which is the same investigation continued: the remaining clusters
+were read one by one rather than counted, and one of them was pointing at a live defect.
+
+**Closed 2026-08-01** by v1.16.0 (L3), v1.16.1 (L5) and v1.16.2 (L6), and then taken the last step
+by v1.16.3, which finished the clean pass those three had left a 25-error tail of. **153 -> 0
+errors** across the stream, one live defect fixed (L3, a raw `TypeError` reaching the caller), and no
+behavior change anywhere else. What closes it is not the count but the gate: `make check` is now
+`lint -> typecheck -> test` and mypy is clean, so this surface is watched on every run rather than
+periodically read. That was the whole premise -- an unbound claim is free to be false -- and it ends
+up applying to the instrument too. The error count was the last claim in this file that nothing
+bound, and the fix was to stop having one: the number is now the gate's exit status.
+
+The five things the stream leaves behind, in the order they are worth remembering:
+
+1. **A claim nothing checks will be false eventually**, and every finding here was one: an annotation
+   (L1, L4, and `np.dtype` in v1.16.3), a dead method (L2), an inheritance (L5), a number in this
+   file (L6).
+2. **Read a cluster, do not count it.** L3 was found by asking what six errors were pointing at.
+   The answer was a live defect; the errors were the messenger.
+3. **Fix the claim and the thing it points at together.** L3's guard is what made its annotation
+   true, so the narrowing landed at one site instead of six silencings.
+4. **Bind it where it is enforced, not where it is written.** L6 filed a note telling a reader to
+   clear the cache; what shipped was `--no-incremental`, which is the same rule with nothing to
+   remember.
+5. **State a claim to find out it is wrong.** L3's cast narrowed `dict[Hashable, Any]` to
+   `dict[str, np.dtype]` and in doing so wrote down, for the first time, a value type that had been
+   false at 22 sites since the beginning. Nobody could see it while it was only an assumption.
+   Scaffolding counts too: v1.16.2's baseline was built to be deleted one release later, and it was
+   worth building anyway, because it made the shrink visible while the shrinking happened.
+
+- [x] **L4. Four more false claims, no behavior change.** Shipped alongside L3's filing;
+  `datatable` was declared `list[list[int | str | bool | date]]`, the **same missing `float`** L1
+  found at nine other sites and the one site L1 missed, so a float column's cells were declared
+  impossible in the function that scans them. `build_grouped_table` declared
+  `parsed_such_that_clause` and `parsed_having_clause` non-optional while `execute` passes `None`
+  for both and the body guards for it. And L1's own ignore on the avg accumulator named
+  `[index]` where the line also raises `[operator]`, so three errors sat uncovered behind a comment
+  that looked like it covered them -- worth recording because a *partial* ignore reads exactly like
+  a complete one. 66 -> 58 errors, gate green at 436.
+
+- [x] **L3. A frame whose columns are not strings raises a raw `TypeError` from inside the parser.**
+  Found by asking what the six `dict[Hashable, Any]` errors in `parse.py` were actually pointing at,
+  rather than silencing them: pandas types column labels as `Hashable` because they need not be
+  strings, and this engine assumes throughout that they are.
+
+  ```
+  df = pd.DataFrame({0: ['a', 'b'], 1: [10, 20]})
+  df.esql.query("SELECT 0, 1.sum")
+  -> TypeError: sequence item 0: expected str instance, int found
+  ```
+
+  It gets as far as `types.aggregate_key`'s `".".join(parts)`. `_resolve_column` finds the column
+  happily -- an integer label is a legal key in the dtypes dict -- so nothing refuses the frame, and
+  what reaches the caller is a raw Python error naming neither the column nor the query. In the
+  browser demo that reaches the visitor, which is the same failure `_dtype_kind` was added to prevent
+  in v1.6.0 and that `STRING_LITERAL` got its own error type for in v1.8.0.
+
+  **The instrument already exists and the precedent is exact.** v1.15.0 refuses a frame whose column
+  is named `count`, at `df.esql` rather than at query time, because the name is the thing that can be
+  changed and the collision should be refused where it is chosen. A non-string column name is the
+  same case, so `accessor._reject_reserved_columns` is the place and it wants a sibling. The open
+  question is only whether to **refuse** the frame or **coerce** the labels with `str()`: coercing
+  makes `SELECT 0` work but silently renames the caller's columns, and a frame with both `0` and
+  `"0"` then collides. Refusing is consistent with every other collision rule this engine has taken.
+  This changes what `df.esql` accepts, so it is a decision, not a cleanup.
+
+  **Shipped in v1.16.0, refusing**, the way the filing leaned. See that entry in the settled record.
+  What made it worth taking rather than deferring is the half the filing did not anticipate: the
+  guard is what makes `column_dtypes: dict[str, np.dtype]` a *true* statement, so the six
+  `dict[Hashable, Any]` errors that turned this up are narrowed at the one place the dict is built
+  rather than silenced at six call sites. The fix and the errors that found it close together.
+
+- [x] **L5. The condition-tree types claim an inheritance the evaluator does not need.**
+  `CompoundGroupCondition` inherits `CompoundCondition` and overrides `conditions` with a different
+  element type, which TypedDict forbids (3 `[misc]`, and most of the 17 `[typeddict-item]` follow
+  from it). The thing worth knowing is *why* it is written that way and why it has been harmless:
+  **`_evaluate_condition` is declared `condition: dict` and genuinely evaluates both trees** -- the
+  WHERE clause and each SUCH THAT section -- because both really do have the same shape. The
+  inheritance is an attempt to say so, and the `dict` annotation is an opt-out that hides whether it
+  is true.
+
+  So the fix is probably *not* the dataclass migration the mypy item proposes. It is to name the
+  thing that is actually shared: a `ParsedCondition` union that `_evaluate_condition` takes, so the
+  interchangeability the code relies on is written down and checked, and the two hierarchies stop
+  claiming a subtype relationship neither needs. Cheaper than dataclasses and it documents a real
+  property instead of a modelling accident. Worth doing on the G1 reasoning, not for the count.
+
+  **Shipped in v1.16.1, as filed and no dataclasses.** See that entry in the settled record. The
+  filing was right that the inheritance was an attempt to say something true, and it turned out to
+  be **wrong about the level as well as the relationship**: the override declared `conditions` as
+  `list[ParsedSuchThatClause]`, a list of *lists* of sections, while `_parse_such_that_section` has
+  always put sections there. So the one place the two hierarchies were tied together was also the
+  one place the shape was mis-stated, which is the L-stream thesis in miniature.
+
+- [x] **L6. `make typecheck` reported a count that was eight errors stale, from `.mypy_cache`.**
+  Found 2026-08-01 by running the target on a clean checkout of `d03f2b0` and getting **66**, then
+  getting **58** from the same tree after `rm -rf .mypy_cache`. Nothing was edited in between.
+
+  **What makes it worth an item rather than a shrug is what the stale errors said.** Two of them
+  named `build_grouped_table` as declaring `parsed_such_that_clause` non-optional — the exact claim
+  **L4 had already deleted**, against a signature that reads `ParsedSuchThatClause | None` in the
+  tree. So the target did not merely over-count: it reported a specific, plausible, checkable defect
+  that had been fixed, naming a line and a type. Read in good faith it sends you to fix something
+  already correct, which is worse than a wrong total.
+
+  **This is the third stale count in this repo, and the first two are already recorded above.** The
+  number was stale at 143 for however long `make typecheck` was calling `uv run mypy` (fixed in
+  v1.5.0), and the backlog item's **68 / 30 / 17 / 6** was stale the moment L4 landed. Three
+  different mechanisms — a target that errored before the tool ran, a note not updated after a fix,
+  and now a cache — producing the same failure, which is this stream's own thesis arriving at the
+  instrument doing the measuring: **the count is a claim, and nothing binds it either.**
+
+  **The cheap half is knowing, not fixing.** Whatever the cache mechanism turns out to be (mtime
+  granularity across edits landing in the same second is the likely one, and worth confirming before
+  blaming mypy), any count recorded in this file should come from a cleared cache, because an
+  incremental one cannot be told from a clean one by reading the output. That is a line in the
+  toolchain note, not a code change.
+
+  **The half worth building: a baseline, now, rather than after L5.** This stream's premise is that
+  until `typecheck` is clean nothing checks the annotations, so they drift like prose — which defers
+  the binding until a rewrite that is explicitly "its own pass". A frozen baseline binds them
+  *today*: the 58 known errors pass, anything new fails, and `typecheck` can join `make check` and CI
+  without waiting for L5. L1, L2 and L4 all entered as drift on a surface nothing was watching, and a
+  baseline is the only proposal here that stops the fourth one arriving the same way rather than
+  being found by reading. It also makes L5 measurable — the baseline shrinks by the cluster, which is
+  the evidence the model change was the right one.
+
+  **Shipped in v1.16.2, and the cheap half turned out not to be the cheapest.** See that entry in the
+  settled record. The filing proposed a line in the toolchain note telling a reader to clear the
+  cache; what shipped is `--no-incremental` on every run that records or checks a count, which is the
+  same rule with nothing to remember. Writing it down would have been a fourth unbound claim in a
+  stream about unbound claims. The baseline landed as filed, with one addition the filing did not
+  ask for: a *fixed* error fails too, until the baseline is re-recorded, because a baseline that
+  silently absorbs improvements is exactly mechanism number four.
 
 ---
 
@@ -440,6 +571,20 @@ recorded error count went stale for months.
 
 Nothing in the repo is affected — the `Makefile` and `.github/workflows/ci.yaml` both use
 `uv run python -m pytest`, which is the form every target should keep using.
+
+**And an error count must come from a non-incremental run** (L6). `make typecheck` on an unchanged
+tree reported 66 from an incremental cache and 58 after `rm -rf .mypy_cache` — including two errors
+against a `build_grouped_table` signature L4 had already changed. A stale run is not distinguishable
+from a clean one by reading its output, and this file had carried a wrong count three times by then.
+
+**This one is enforced rather than remembered**, since v1.16.2: `make typecheck` passes
+`--no-incremental`, so the gate cannot read a cache. A clean run of this project costs about 2.5
+seconds, which is what made the rule affordable to bind instead of writing down. A bare
+`uv run python -m mypy` is still incremental and still lies; use the target.
+
+**Where the target list now stands.** `make check` is `lint -> typecheck -> test`, and since v1.16.3
+`typecheck` means what it says: mypy is clean, so any error at all fails. The frozen baseline
+v1.16.2 introduced is gone, having done its job in the one release it existed for.
 
 ---
 
@@ -534,22 +679,19 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 - [x] **HAS / semi-join predicate (headline feature, requested for the GD demo).** Shipped in
   v1.4.0; see that entry below. Still open on the demo side: an example wired into the ESQL demo,
   which needs `portfolio` (the frontend) and its data.
-- [ ] **Nested / multi-grain aggregation (headline feature — the grain-bridging companion to
-  HAS).** Aggregate at a declared finer grain, then roll *that* up — an aggregate of an
-  aggregate, in one pass, no subqueries (the MFQueries thesis taken a step further). Motivating
-  case: the GD archive is one song-grain table, but a "show" is the derived grain `(venue, date)`.
-  Today you can group *to* the show grain, but you cannot put a song-level measure beside a
-  show-level roll-up, nor take "avg songs-per-show by venue" (an avg of a per-show count). This
-  makes a separate `shows` table unnecessary — shows become "aggregate at the `(venue, date)`
-  grain." The dataset already *declares* the grain (in the shared `datasets/<src>/*.structure.json`:
-  "a show is (venue, date)"), so the language can read it. Sketch (uncommitted): a `PER <grain>`
-  sub-aggregate, e.g. `SELECT venue, songs_per_show.avg PER show (venue, date) WITH songs_per_show
-  = count PER show`. Work: parser grammar for the sub-grain + a two-level execution pass (compute
-  the fine-grain aggregate, then the output-grain aggregate over it) + tests + a
-  `public/docs/syntax.md` section + an ESQL demo example. Pairs with HAS: HAS
-  *filters* one grain by another; this *measures* across grains. Design captured now; build parked
-  until the datasets/rename plumbing lands.
-- [ ] **mypy clean pass.** **68 errors** (153 before the accumulator types landed in v1.15.0, 157
+- **Nested / multi-grain aggregation — DECLINED 2026-08-01.** The idea was a `PER <grain>`
+  sub-aggregate: aggregate at a declared finer grain, then roll *that* up in one pass, so
+  "avg songs-per-show by venue" (an average of a per-show count) became expressible and a derived
+  grain like a show, `(venue, date)`, never needed its own table. It carried a new grammar clause
+  and a two-level execution pass.
+
+  **Not building it.** The cost is a second execution model for a question you can already answer
+  by grouping twice, and it would be the first construct in the language that the single-pass
+  Phi-operator story does not cover. The language is finished; this was scope, not a gap. Recorded
+  so it is not re-proposed — reopen only if a real query, not a hypothetical, cannot be written
+  without it.
+- [x] **mypy clean pass.** **0 errors**, shipped in v1.16.3; see that entry in the settled record. The
+  trail down: 25 before it (53 before L5, 58 before L3, 68 before L4, 153 before the accumulator types landed in v1.15.0, 157
   before v1.15.0's feature work, 159 before v1.9.0, and recorded as 156 until v1.8.0; the count was
   stale at 143 before that because `make typecheck` called
   `uv run mypy`, whose console script does not spawn, so the target errored out before reaching
@@ -563,12 +705,16 @@ All fixed and covered by the now-meaningful integration suite (see §3).
   it to 68 without a single behavior change. `--warn-unused-ignores` is clean, so no ignore is
   suppressing nothing.
 
-  What is left is two clusters and a tail: **30 `[arg-type]`**, **17 `[typeddict-item]`** plus
-  `[index]`, mostly TypedDict key-narrowing mypy cannot follow through runtime `'group' in
-  aggregate` checks, and **6 `[misc]`** which include the dead `__eq__` methods (Stream L). The
-  remaining fix is to model parsed conditions as dataclasses rather than TypedDicts, which is a real
-  change to the parser's shapes and wants its own pass. Until then `typecheck` stays advisory: it is
-  not in `make check` and not in CI.
+  ~~The remaining fix is to model parsed conditions as dataclasses rather than TypedDicts~~ — **L5
+  shipped the alternative** in v1.16.1: a `ParsedCondition` union naming the interchangeability
+  `_evaluate_condition` relies on, which took 53 errors to 25 with no behavior change and no
+  dataclasses. There is now no reason to start a dataclass pass at all; the TypedDicts type-check
+  clean.
+  **`typecheck` is no longer advisory, and no longer baselined.** v1.16.2 froze the 25 known errors
+  so the surface could be watched before it was clean; v1.16.3 emptied that baseline and deleted it,
+  and the target is now plain `mypy --no-incremental` in `make check` and CI. **This count cannot go
+  stale again, because there is no count** — the number that used to live in this line is now the
+  gate's exit status.
 - [x] **Push the release** — done 2026-07-28. PR #2 (`v1.0.1` through `v1.4.0`) and PR #3
   (`v1.5.0`) merged to `main`, all tagged and pushed (`lucash0pe/extendedsql`). `v1.1.2` is
   deliberately untagged: it was never a release, only a version an auto-checkpoint commit wrote to
@@ -1261,6 +1407,184 @@ All fixed and covered by the now-meaningful integration suite (see §3).
 
   **Portfolio-side follow-up: none.** No export, no new name, no `GRAMMAR` key, no behavior.
 
+## v1.16.0 — a column label has to be a string, and the frame says so (2026-08-01)
+
+- [x] **L3.** `pd.DataFrame({0: [...], 1: [...]}).esql.query("SELECT 0, 1.sum")` raised
+  `TypeError: sequence item 0: expected str instance, int found` out of `types.aggregate_key`'s
+  `".".join`, naming neither the column nor the query. It now raises a `ParsingError` at `df.esql`.
+  Bumped `1.15.1 -> 1.16.0`; the gate is green at **446 tests** (was 436).
+
+  **Refused, not coerced**, which was the open question and the only decision in the item. `str()` on
+  the way in would make `SELECT 0` work, at the cost of renaming the caller's columns without saying
+  so, and a frame holding both `0` and `"0"` would silently collapse two columns into one label.
+  Refusing keeps the rename where it can be seen, and the message names the type and spells the
+  conversion (`df.columns = df.columns.astype(str)`) so it is one line to take deliberately. Same
+  reasoning and the same place as v1.15.0's reserved-name rule, which is why
+  `_reject_non_string_columns` sits beside `_reject_reserved_columns` and runs first: a non-string
+  label should be reported as itself rather than as a near-miss on `count`.
+
+  **The half that was not in the filing, and is the reason it earned a release rather than a
+  cleanup.** The item was written from the six `dict[Hashable, Any]` errors in `parse.py`, which are
+  pandas saying a column label need not be a string. With the guard in place that claim is no longer
+  true of a frame this engine will accept, so `_build_parsed_query` narrows once, where the dict is
+  built, and the five call-site errors go with it. **53 errors (was 58), no ignore added.** The
+  narrowing is a `cast` and deliberately not a `str()` comprehension: there is nothing left to
+  convert, and coercing there would hide a frame that slipped past the guard. This is the shape
+  Stream L keeps looking for -- a false claim and the thing it was pointing at, fixed by the same
+  change rather than by silencing the claim.
+
+  Covered by `tests/accessor/test_column_labels.py` (10 tests): every label kind pandas allows
+  (`int`, `float`, `bool`, `None`, `tuple`), the refusal happening before any query is read, a
+  string-digit label `"0"` still being queryable, and the `{0: ..., "0": ...}` frame that makes
+  coercion lossy left with its columns intact.
+
+  **Portfolio-side follow-up: none.** No new export, so the export-diff guard does not fire, and no
+  `GRAMMAR` key changes. `NON_STRING_COLUMN` is a new `ParsingErrorType`, which reaches a host only
+  as the `[NON-STRING COLUMN]` prefix on an error string; the demo hands the accessor frames read
+  from its own CSVs, whose labels are strings.
+
+## v1.16.1 — one walk, named (2026-08-01)
+
+- [x] **L5.** The condition types stop claiming a subtype relationship and start naming the property
+  the evaluator relies on. Bumped `1.16.0 -> 1.16.1`; the gate is green at **451 tests** (was 446).
+  **25 errors (was 53)**, no behavior change.
+
+  **What the inheritance was covering, and what it got wrong.** `CompoundGroupCondition` inherited
+  `CompoundCondition` and redeclared `conditions`; `NotGroupCondition` and `GroupAggregateCondition`
+  did the same to their bases. TypedDict forbids the override for a good reason -- a group condition
+  is not usable everywhere a where-clause condition is, because its children are group conditions --
+  and those three lines cost 3 `[misc]` plus most of the 17 `[typeddict-item]`. They were also
+  **wrong about the level**: `conditions` was declared `list[ParsedSuchThatClause]`, a list of
+  *lists* of sections, against a parser that has always put sections there. The one place the two
+  hierarchies were tied together was the one place the shape was mis-stated, and nothing caught it
+  because `_evaluate_condition` was declared `condition: dict`, which claims nothing.
+
+  **What replaces it.** `ParsedCondition = ParsedWhereClause | ParsedSuchThatSection`, which says
+  what is actually shared: both trees are built from the same three node kinds, so one walk answers
+  either. `_evaluate_condition` takes `EvaluableCondition` -- that union plus
+  `ResolvedSemiJoinCondition`, the node only `_resolve_semi_joins` produces. That second type is new
+  and lives in `execution/`, not `parser/`: a resolved HAS node is not a parsed shape, and saying so
+  is what keeps the parser from depending on execution. `SimpleGroupCondition(SimpleCondition)`
+  stays, because it **adds** a key rather than replacing one, and that one real subtype is why the
+  evaluator's leaf branch serves both trees without knowing which it has.
+
+  **The bodies are cast, not ignored, and that is a deliberate line.** mypy does not narrow a union
+  of TypedDicts on `"key" in condition`, and these walkers dispatch on exactly that. The choice was
+  one `cast` per branch (12 of them, each a one-line statement of which node kind carries which key)
+  against roughly 40 `# type: ignore`s. A cast states the invariant; an ignore only silences the
+  complaint. Two of them carry an invariant worth reading rather than a shape: the HAVING evaluator
+  reads a data map that `build_grouped_table` has already finalized, so a slot there is an answer
+  and not an accumulator; and an entry value can only name a SELECT grouping attribute, whose slot
+  holds the row's own cell, so binding never meets an accumulating shape either.
+
+  The two branch-node casts in `_resolve_semi_joins` are the one place the types stay loose on
+  purpose. Resolution keeps a node's shape and changes only its children's type, so declaring it
+  exactly would take a parallel hierarchy of branch types differing in nothing else. The reason is
+  written at the cast rather than left for the next reader to rediscover.
+
+  **`SEMI_JOIN_OPERATOR` is now `Final`,** so its type is `Literal["HAS"]` rather than `str` and it
+  agrees with the `SemiJoinCondition` slot it fills. A one-word fix for a disagreement between a
+  constant and the shape built from it.
+
+  Covered by `tests/parser/test_condition_shapes.py` (5 tests), which binds the shape half: a
+  compound section holds sections rather than lists (the level the old annotation got wrong), a
+  group leaf is a where leaf plus `group`, and `_evaluate_condition` is called with one of each and
+  answers both. The type half is bound by `make typecheck`, which is what L6 wires into the gate.
+  Verified the path is live rather than incidentally green: forcing `_has_entry_value` to return
+  False fails 12 tests.
+
+  **Portfolio-side follow-up: none.** No export, no `GRAMMAR` key, no behavior, no parsed shape
+  changed -- only what the declarations say about it.
+
+## v1.16.2 — the annotations get a gate (2026-08-01)
+
+- [x] **L6, which closes Stream L.** `make typecheck` is no longer advisory: it runs against a frozen
+  baseline and sits in `make check` and in CI. Bumped `1.16.1 -> 1.16.2`; the gate is green at **451
+  tests** and **25 known type errors, none new**. No behavior change; nothing in `src/esql/` moved.
+
+  **Why a baseline rather than waiting for a clean run.** The stream's premise is that until
+  `typecheck` is clean nothing checks the annotations, so they drift like prose -- which defers the
+  binding to a rewrite that keeps being "its own pass". L1, L2, L4 and L5 all entered as drift on a
+  surface nothing was watching, and all four were found by *reading*, which does not scale and did
+  not happen for months at a time. A baseline binds the surface today at the cost of one file.
+
+  **It fails in both directions, which is the part not in the filing.** A new error fails, obviously.
+  A *fixed* error fails too, asking for `make typecheck-record`. A baseline that silently absorbed
+  improvements would be a fourth mechanism for the wrong count L6 exists about -- after a target that
+  errored before mypy ran (v1.5.0), a note not updated after a fix (L4), and a cache (L6 itself).
+  Re-recording is one command, and it puts the shrink in the diff where it can be reviewed, which is
+  what makes a number like L5's "53 -> 25" evidence rather than an assertion.
+
+  **An error's identity is its file, code and message, never its line number**, so moving code does
+  not churn the baseline and a real regression cannot hide behind a reformat. Two identical errors in
+  one file count as two entries.
+
+  **The cache half is enforced, not documented.** The filing proposed a line in the toolchain note
+  telling a reader to clear `.mypy_cache` before recording a count. `scripts/typecheck.py` and `make
+  typecheck-report` both pass `--no-incremental` instead, so neither the gate nor the list you read
+  to fix things can come from a cache. A clean run costs about 2.5 seconds, which is what made this
+  affordable. Writing the rule down would have been a fourth unbound claim in a stream about unbound
+  claims; the note now records the enforcement rather than the reminder. (The mechanism behind the
+  original 66-vs-58 was not chased further, because `--no-incremental` makes it unreachable from
+  either target -- and the script rejects any mypy exit code other than 0 or 1, so the tool failing
+  to run can never again be read as zero errors, which is how the 143 went stale before v1.5.0.)
+
+  **The targets now:** `make check` is `lint -> typecheck -> test`; `typecheck` means "no error
+  outside `scripts/mypy-baseline.txt`"; `typecheck-record` rewrites the baseline; `typecheck-report`
+  prints the full list for reading. `ruff` now covers `scripts/` too. CI gains a Typecheck step
+  between Lint and Test, on all six matrix legs.
+
+  Verified the guard bites, three ways: a deliberate `return x` type error in `parser/error.py` fails
+  with the new error named; deleting a line from the baseline fails as if it were new; and adding a
+  line the tool does not report fails with the "run `make typecheck-record`" message.
+
+  **Portfolio-side follow-up: none.** No export, no `GRAMMAR` key, no runtime code.
+
+## v1.16.3 — mypy is clean, and the baseline is gone (2026-08-01)
+
+- [x] **The mypy clean pass**, open since the stack modernization. **25 errors -> 0.** Bumped
+  `1.16.2 -> 1.16.3`; the gate is green at **455 tests** (was 451). No behavior change.
+
+  **One of the 25 was a false claim on the same scale as L1's missing `float`.** Every
+  `column_dtypes` parameter, at 22 sites, was declared `dict[str, np.dtype]`. It is not:
+  `_enforce_allowed_dtypes` coerces text columns to pandas `"string"`, whose dtype is `StringDtype`,
+  an **`ExtensionDtype` and not a numpy one**. On `sales.csv` that is three of nine columns, and they
+  are the columns every text comparison reads. `dtype_family` even said so in prose -- "reads an
+  enforced dtype" -- directly above a signature that said otherwise. Now one alias, `ColumnDtype`,
+  with the reason attached, and `tests/parser/test_column_dtypes.py` (4 tests) pins that a text
+  column is not an `np.dtype`, that every other family is, and that the engine queries one
+  end to end.
+
+  Worth recording that **L3's cast carried this claim forward.** v1.16.0 narrowed
+  `data.dtypes.to_dict()` from `dict[Hashable, Any]` to `dict[str, np.dtype]`, which fixed the *key*
+  type and made the wrong *value* type explicit for the first time. A cast states a claim; stating
+  one is how it gets checked, and this one was checked three commits later.
+
+  **The rest, read as clusters rather than counted.** `is_group_aggregate` is a `TypeGuard` replacing
+  `"group" in aggregate` written out at five sites -- the rule now has one home and the checker can
+  see the decision, which is the same instrument L5 wanted and could not use for conditions (mypy
+  narrows a `TypeGuard` but never an `in` check on a union of TypedDicts, verified both ways).
+  `find_group_in_such_that_section` gained a return type and a real three-way walk in place of
+  `.get("condition") or .get("conditions")[0]`. `_groups_named_by_leaves` names the "one group per
+  section" check the OR and AND arms were each spelling separately. `SchemaColumn` is a TypedDict
+  with `NotRequired[values]`, which is what `DATASET_SCHEMA` has always declared and what keeps
+  absent (offer no completions) distinct from `[]` (there are none). The projection loop's sort key
+  is a named closure rather than a `lambda row, term=term:`, whose default argument existed to bind
+  a loop variable the sort never outlives. Two variables that held both a clause and the text of a
+  clause were renamed.
+
+  **And the baseline v1.16.2 shipped is deleted.** It existed because the run was not clean; the run
+  is clean, so a file holding zero known errors is a mechanism with no job, and plain
+  `mypy --no-incremental` is both simpler and strictly stronger. What survives from L6 is the half
+  that was never about the baseline: `--no-incremental` on the target, so a cached run cannot be
+  mistaken for a clean one. One release is a short life for a mechanism, and the right one -- it
+  made the shrink measurable while the shrinking was happening, which is exactly what it was for.
+
+  Verified the gate bites: a deliberate `return x` type error in `parser/error.py` fails `make check`
+  at the typecheck step, before the tests run.
+
+  **Portfolio-side follow-up: none.** No export, no `GRAMMAR` key, no behavior.
+
 ## 3. Engine-side prep for the ESQL demo
 
 The demo frontend lives in `portfolio/site/esql/` and its data in `portfolio/backend/esql/`
@@ -1274,5 +1598,6 @@ column's `values` (what can go in a literal) — and the host does the rendering
   `esql.demokit.build_demo` (SQL-validated), out of this repo.
 - [x] Demo execution model decided: **in-browser via Pyodide** (the `esql` wheel), no backend.
 - [x] `from esql import ESQLAccessor` / the `.esql` accessor is the stable entry point the wheel exposes.
-- Next engine ask from the demo: **nested / multi-grain aggregation** above (§ headline features).
-  `HAS` shipped in v1.4.0; what remains on the demo side is an example wired into the ESQL editor.
+- No open engine ask from the demo. `HAS` shipped in v1.4.0; what remains on the demo side is an
+  example wired into the ESQL editor, which is `portfolio`'s work. Nested / multi-grain aggregation
+  was the last standing ask and was declined 2026-08-01 (see § headline features).
